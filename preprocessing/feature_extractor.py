@@ -42,6 +42,40 @@ def landmarks_to_flat(pts):
     return [v for pt in pts for v in pt]
 
 
+def extract_advanced_features(X_flat):
+    """
+    Given an (N, 63) array or a simple list of 63 coordinates,
+    computes 210 pairwise distances to build a rich (N, 273) shape descriptor.
+    This makes classification extremely accurate!
+    """
+    is_1d = False
+    if isinstance(X_flat, list):
+        X_flat = np.array([X_flat], dtype=np.float32)
+        is_1d = True
+    elif X_flat.ndim == 1:
+        X_flat = X_flat.reshape(1, -1)
+        is_1d = True
+        
+    N = X_flat.shape[0]
+    pts = X_flat.reshape((N, 21, 3))
+    
+    features = [X_flat]
+    
+    # Fully vectorized pairwise distance calculation using broadcasting!
+    # pts expands to (N, 21, 1, 3) and (N, 1, 21, 3)
+    diff = pts[:, :, np.newaxis, :] - pts[:, np.newaxis, :, :]
+    dist_matrix = np.linalg.norm(diff, axis=-1)  # shape (N, 21, 21)
+    
+    # Extract the upper triangle (the 210 unique pairs)
+    i_indices, j_indices = np.triu_indices(21, k=1)
+    distances = dist_matrix[:, i_indices, j_indices]  # shape (N, 210)
+    
+    features.append(distances)
+    res = np.hstack(features)
+    
+    return res[0] if is_1d else res
+
+
 def load_static_dataset(data_dir="data/static"):
     """Load all static gesture CSVs into X (N, 63) and y (N,) arrays."""
     all_dfs = []

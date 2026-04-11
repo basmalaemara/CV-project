@@ -29,7 +29,7 @@ from preprocessing.feature_extractor import (
 SAVE_DIR         = "data/dynamic"
 MODEL_PATH       = "models/hand_landmarker.task"
 SEQUENCE_LENGTH  = 30
-SAMPLES_PER_GESTURE = 100
+SAMPLES_PER_GESTURE = 20
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 # ── MediaPipe Tasks setup ─────────────────────────────────────────────────────

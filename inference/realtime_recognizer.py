@@ -18,6 +18,7 @@ from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
 import tensorflow as tf
 from collections import deque
+import string
 import time
 import os
 import sys
@@ -28,6 +29,7 @@ from preprocessing.feature_extractor import (
     DYNAMIC_LABELS,
     normalize_landmarks,
     landmarks_to_flat,
+    extract_advanced_features,
 )
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -45,14 +47,14 @@ def load_model_safe(path):
     return tf.keras.models.load_model(path)
 
 static_model  = load_model_safe("models/keypoint_classifier.keras")
-dynamic_model = load_model_safe("models/point_history_classifier.keras")
+static_model  = load_model_safe("models/keypoint_classifier.keras")
 
 static_labels  = (np.load("models/static_class_labels.npy")
                   if os.path.exists("models/static_class_labels.npy")
                   else list(GESTURE_LABELS.values()))
-dynamic_labels = (np.load("models/dynamic_class_labels.npy")
-                  if os.path.exists("models/dynamic_class_labels.npy")
-                  else list(DYNAMIC_LABELS.values()))
+static_labels  = (np.load("models/static_class_labels.npy")
+                  if os.path.exists("models/static_class_labels.npy")
+                  else list(GESTURE_LABELS.values()))
 
 # ── MediaPipe Tasks ───────────────────────────────────────────────────────────
 BaseOptions          = mp_python.BaseOptions
@@ -101,7 +103,7 @@ def blend_rect(frame, pt1, pt2, color, alpha=0.75):
     cv2.rectangle(overlay, pt1, pt2, color, -1)
     cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
 
-def draw_ui(frame, s_label, s_conf, d_label, d_conf, history, fps, hand_ok):
+def draw_ui(frame, s_label, s_conf, sentence_built, history, fps, hand_ok, current_mode, conflict_pending=None):
     h, w = frame.shape[:2]
 
     # Top panel
@@ -118,25 +120,40 @@ def draw_ui(frame, s_label, s_conf, d_label, d_conf, history, fps, hand_ok):
     cv2.putText(frame, "Hand detected" if hand_ok else "No hand",
                 (34, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (200, 200, 200), 1)
 
-    # Static row
-    cv2.putText(frame, "STATIC:", (12, 58),
+    # Static prediction row
+    cv2.putText(frame, "CURRENT DETECT:", (12, 58),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.46, (140, 200, 160), 1)
-    label_display = s_label.replace("_", " ") if s_label != "—" else "—"
-    cv2.putText(frame, label_display, (85, 58),
+    label_display = s_label.replace("_", " ") if s_label != "-" else "-"
+    cv2.putText(frame, label_display.upper(), (145, 58),
                 cv2.FONT_HERSHEY_DUPLEX, 0.82, ACCENT_GREEN, 2)
     draw_bar(frame, 12, 64, 260, s_conf, ACCENT_GREEN)
     cv2.putText(frame, f"{s_conf:.0%}", (278, 74),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.44, ACCENT_GREEN, 1)
 
-    # Dynamic row
-    cv2.putText(frame, "DYNAMIC:", (12, 94),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.46, (140, 160, 220), 1)
-    dlabel_display = d_label.replace("_", " ") if d_label != "—" else "—"
-    cv2.putText(frame, dlabel_display, (95, 94),
-                cv2.FONT_HERSHEY_DUPLEX, 0.74, ACCENT_BLUE, 2)
-    draw_bar(frame, 12, 98, 260, d_conf, ACCENT_BLUE)
-    cv2.putText(frame, f"{d_conf:.0%}", (278, 108),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.44, ACCENT_BLUE, 1)
+    # Conflict Popup
+    if conflict_pending is not None:
+        blend_rect(frame, (w//2 - 250, h//2 - 100), (w//2 + 250, h//2 + 80), (30, 20, 120), alpha=0.95)
+        cv2.rectangle(frame, (w//2 - 250, h//2 - 100), (w//2 + 250, h//2 + 80), (100, 100, 255), 2)
+        cv2.putText(frame, "AMBIGUOUS SIGN DETECTED!", (w//2 - 180, h//2 - 50),
+                    cv2.FONT_HERSHEY_DUPLEX, 0.7, (180, 180, 255), 2)
+        cv2.putText(frame, f"Did you mean '{conflict_pending[0].upper()}' or '{conflict_pending[1].upper()}'?",
+                    (w//2 - 220, h//2), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        cv2.putText(frame, f"Press the '{conflict_pending[0].upper()}' or '{conflict_pending[1].upper()}' key to confirm.",
+                    (w//2 - 230, h//2 + 50), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 255, 200), 1)
+
+    # Sentence Box at bottom
+    blend_rect(frame, (0, h - 80), (w, h), (30, 20, 40), alpha=0.95)
+    
+    # Mode indicator
+    mode_text = f"MODE: [{current_mode}]   (Press '1': Letters  '2': Numbers  '3': All)"
+    cv2.putText(frame, mode_text, (15, h - 60),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 255, 200), 1)
+
+    cv2.putText(frame, "SENTENCE:", (15, h - 35),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (160, 160, 200), 1)
+    cv2.putText(frame, sentence_built, (15, h - 5),
+                cv2.FONT_HERSHEY_DUPLEX, 1.2, (255, 230, 120), 2)
+
 
     # History sidebar
     if history:
@@ -147,12 +164,12 @@ def draw_ui(frame, s_label, s_conf, d_label, d_conf, history, fps, hand_ok):
         for i, hl in enumerate(list(history)):
             fade = max(100, 255 - i * 25)
             col  = (int(200*fade/255), int(200*fade/255), int(255*fade/255))
-            cv2.putText(frame, f"• {hl}", (w - 208, 92 + i * 26),
+            cv2.putText(frame, f"> {hl}", (w - 208, 92 + i * 26),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.47, col, 1)
 
-    # Bottom hint
-    cv2.putText(frame, "Q — quit", (10, h - 10),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.44, (80, 80, 100), 1)
+    # Controls hint
+    cv2.putText(frame, "Hold sign = Type | '5' = Space | 'Thumbs Down' = Backspace | 'Fist' = Clear", (10, h - 90),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 200, 100), 1)
 
     return frame
 
@@ -164,9 +181,21 @@ cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 frame_buffer    = deque(maxlen=SEQUENCE_LENGTH)
 gesture_history = deque(maxlen=HISTORY_MAX)
 
-s_label, s_conf = "—", 0.0
-d_label, d_conf = "—", 0.0
+sentence_built = ""
+frames_held = 0
+last_raw = ""
+s_label, s_conf = "-", 0.0
 prev_time = time.time()
+current_mode = "ALL"  # Options: "ALL", "LETTERS", "NUMBERS"
+conflict_pending = None
+
+CONFLICT_MAP = {
+    "1": "d", "d": "1",
+    "0": "o", "o": "0",
+    "2": "v", "v": "2",
+    "6": "w", "w": "6",
+    "9": "f", "f": "9"
+}
 
 print("\n✅  Recognition started. Press Q to quit.\n")
 
@@ -191,45 +220,91 @@ while cap.isOpened():
         pts  = normalize_landmarks(lms)
         flat = landmarks_to_flat(pts)
 
-        # Static
+        # Word Builder Logic
         if static_model is not None:
-            probs = static_model.predict(
-                np.array([flat], dtype=np.float32), verbose=0
-            )[0]
-            if probs.max() >= CONFIDENCE_STATIC:
-                new_lbl = str(static_labels[np.argmax(probs)]).replace("_", " ")
-                if new_lbl != s_label:
-                    gesture_history.appendleft(new_lbl)
-                s_label = new_lbl
-                s_conf  = float(probs.max())
-            else:
-                s_label, s_conf = "—", 0.0
+            features = extract_advanced_features(flat)
+            features_tnsr = tf.convert_to_tensor([features], dtype=tf.float32)
+            probs = static_model(features_tnsr, training=False)[0].numpy()
+            
+            # --- MODE FILTERING ---
+            # Automatically zero-out the confidence of elements we want to ignore
+            for i, class_name in enumerate(static_labels):
+                lbl_lower = str(class_name).lower()
+                if current_mode == "LETTERS" and lbl_lower in "0123456789":
+                    probs[i] = 0.0
+                elif current_mode == "NUMBERS" and lbl_lower in string.ascii_lowercase and len(lbl_lower) == 1:
+                    probs[i] = 0.0
 
-        # Dynamic
-        frame_buffer.append(flat)
-        if dynamic_model is not None and len(frame_buffer) == SEQUENCE_LENGTH:
-            seq    = np.array([list(frame_buffer)], dtype=np.float32)
-            dprobs = dynamic_model.predict(seq, verbose=0)[0]
-            if dprobs.max() >= CONFIDENCE_DYNAMIC:
-                new_dyn = str(dynamic_labels[np.argmax(dprobs)]).replace("_", " ")
-                if new_dyn != d_label:
-                    gesture_history.appendleft(f"[dyn] {new_dyn}")
-                d_label = new_dyn
-                d_conf  = float(dprobs.max())
+            if probs.max() >= CONFIDENCE_STATIC:
+                raw_lbl = str(static_labels[np.argmax(probs)]).replace("_", " ")
+                s_conf  = float(probs.max())
+                s_label = raw_lbl
+                
+                if raw_lbl == last_raw:
+                    frames_held += 1
+                else:
+                    frames_held = 0
+                    last_raw = raw_lbl
+                
+                # If held steady for 6 frames (~0.4 seconds), register the character!
+                if frames_held == 6 and conflict_pending is None:
+                    lbl_lower = raw_lbl.lower()
+                    
+                    if current_mode == "ALL" and lbl_lower in CONFLICT_MAP:
+                        # Enter conflict resolution state
+                        conflict_pending = (lbl_lower, CONFLICT_MAP[lbl_lower])
+                        frames_held = -30  # Prevent re-triggering while resolving
+                    else:
+                        if raw_lbl in ["open hand", "open hand / 5", "5"]:
+                            sentence_built += " "
+                        elif raw_lbl == "thumbs down":
+                            sentence_built = sentence_built[:-1]
+                        elif raw_lbl in ["fist", "fist / a / s"]:
+                            sentence_built = ""
+                        else:
+                            letter = raw_lbl.split(" / ")[0].lower()
+                            if letter == "thumbs up":
+                                sentence_built += "👍" 
+                            else:
+                                sentence_built += letter
+                        
+                        gesture_history.appendleft(raw_lbl)
+                        frames_held = -5
             else:
-                d_label, d_conf = "—", 0.0
+                s_label, s_conf = "-", 0.0
+                frames_held = 0
     else:
-        s_label, s_conf = "—", 0.0
-        d_label, d_conf = "—", 0.0
+        s_label, s_conf = "-", 0.0
+        frames_held = 0
 
     now       = time.time()
     fps       = 1.0 / (now - prev_time + 1e-9)
     prev_time = now
 
-    draw_ui(frame, s_label, s_conf, d_label, d_conf, gesture_history, fps, hand_ok)
+    draw_ui(frame, s_label, s_conf, sentence_built, gesture_history, fps, hand_ok, current_mode, conflict_pending)
     cv2.imshow("Hand Gesture Recognition", frame)
-    if cv2.waitKey(1) & 0xFF == ord("q"):
-        break
+    
+    key = cv2.waitKey(1) & 0xFF
+    
+    if conflict_pending is not None:
+        if key != 255: # A key was pressed
+            c1, c2 = conflict_pending
+            key_char = chr(key).lower()
+            if key_char == c1:
+                sentence_built += c1
+                conflict_pending = None
+            elif key_char == c2:
+                sentence_built += c2
+                conflict_pending = None
+    else:
+        if key == ord("q"):
+            break
+        elif key == ord("1"):
+            current_mode = "LETTERS"
+        elif key == ord("2"):
+            current_mode = "NUMBERS"
+        elif key == ord("3"):
+            current_mode = "ALL"
 
 cap.release()
 cv2.destroyAllWindows()

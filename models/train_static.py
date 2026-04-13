@@ -57,17 +57,30 @@ else:
 # They will rely on making distinct poses during data collection to differentiate them.
 y_raw_list = data["label"].astype(str).str.lower().values
 
-# ── Step 3: Data Augmentation (Jitter, Noise, Scaling) ────────────────
-# Duplicate the dataset 6 times! Adding random noise and scaling stretches
+# ── Step 3: Data Augmentation (Rotation, Jitter, Noise, Scaling) ──────────
 X_aug_list = [X_raw]
 y_final_list = [y_raw_list]
-for _ in range(6):
-    # 1.5% random gaussian noise
-    noise = np.random.normal(loc=0.0, scale=0.015, size=X_raw.shape)
-    # Random size scaling between 90% and 110%
-    scale = np.random.uniform(0.90, 1.10, size=(X_raw.shape[0], 1))
+
+for _ in range(8): # Increased from 6 to 8 for more power!
+    # 1. Random Rotation (+/- 15 degrees) around the Z-axis 
+    # (Since landmarks are centered at wrist, simple 2D rotation on XY works great)
+    angle = np.random.uniform(-15, 15) * (np.pi / 180.0)
+    cos_a, sin_a = np.cos(angle), np.sin(angle)
     
-    noisy_scaled_X = (X_raw + noise) * scale
+    # Reshape to (N, 21, 3) to apply rotation to each point
+    pts = X_raw.reshape(-1, 21, 3)
+    rotated_pts = pts.copy()
+    rotated_pts[:, :, 0] = pts[:, :, 0] * cos_a - pts[:, :, 1] * sin_a
+    rotated_pts[:, :, 1] = pts[:, :, 0] * sin_a + pts[:, :, 1] * cos_a
+    X_rot = rotated_pts.reshape(X_raw.shape)
+
+    # 2. 1.8% random gaussian noise
+    noise = np.random.normal(loc=0.0, scale=0.018, size=X_rot.shape)
+    
+    # 3. Random size scaling between 85% and 115%
+    scale = np.random.uniform(0.85, 1.15, size=(X_rot.shape[0], 1))
+    
+    noisy_scaled_X = (X_rot + noise) * scale
     X_aug_list.append(noisy_scaled_X)
     y_final_list.append(y_raw_list)
 

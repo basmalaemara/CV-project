@@ -34,10 +34,12 @@ from preprocessing.feature_extractor import (
 
 # ── Config ────────────────────────────────────────────────────────────────────
 MODEL_PATH              = "models/hand_landmarker.task"
-CONFIDENCE_STATIC       = 0.82
-CONFIDENCE_DYNAMIC      = 0.85
+CONFIDENCE_STATIC       = 0.60 # Lowered for easier detection
+CONFIDENCE_DYNAMIC      = 0.50 # Lowered for better responsiveness
 SEQUENCE_LENGTH         = 30
 HISTORY_MAX             = 8
+HOLD_THRESHOLD          = 2.0  # Seconds to hold (Very Deliberate)
+TYPE_COOLDOWN           = 1.5  # Seconds between repeats
 
 # ── Load Keras models ─────────────────────────────────────────────────────────
 def load_model_safe(path):
@@ -47,14 +49,15 @@ def load_model_safe(path):
     return tf.keras.models.load_model(path)
 
 static_model  = load_model_safe("models/keypoint_classifier.keras")
-static_model  = load_model_safe("models/keypoint_classifier.keras")
+dynamic_model  = load_model_safe("models/point_history_classifier.keras")
 
 static_labels  = (np.load("models/static_class_labels.npy")
                   if os.path.exists("models/static_class_labels.npy")
                   else list(GESTURE_LABELS.values()))
-static_labels  = (np.load("models/static_class_labels.npy")
-                  if os.path.exists("models/static_class_labels.npy")
-                  else list(GESTURE_LABELS.values()))
+
+dynamic_labels  = (np.load("models/dynamic_class_labels.npy")
+                   if os.path.exists("models/dynamic_class_labels.npy")
+                   else list(DYNAMIC_LABELS.values()))
 
 # ── MediaPipe Tasks ───────────────────────────────────────────────────────────
 BaseOptions          = mp_python.BaseOptions
@@ -71,6 +74,15 @@ options = HandLandmarkerOptions(
     min_tracking_confidence=0.5,
 )
 detector = HandLandmarker.create_from_options(options)
+
+# ── Modern Color Palette ──────────────────────────────────────────────────────
+ACCENT_GREEN = (100, 255, 140)   # Soft Neon Green
+ACCENT_BLUE  = (255, 180, 100)   # Cyber Blue
+ACCENT_PINK  = (200, 120, 255)   # Vibrant Pink
+BG_DARK      = (22, 18, 28)      # Deep Navy/Purple
+PANEL_COLOR  = (40, 35, 50)      # Glass Panel
+TEXT_WHITE   = (245, 245, 255)
+GOLD_SHIMMER = (100, 220, 255)
 
 # ── Drawing ───────────────────────────────────────────────────────────────────
 HAND_CONNECTIONS = [
@@ -94,82 +106,96 @@ def draw_hand(frame, landmarks, h, w):
         cv2.circle(frame, (x, y), r, (255, 255, 255), -1)
         cv2.circle(frame, (x, y), r, (0, 160, 80), 2)
 
-def draw_bar(img, x, y, bw, conf, color):
-    cv2.rectangle(img, (x, y), (x + bw, y + 10), (40, 40, 60), -1)
-    cv2.rectangle(img, (x, y), (x + int(bw * conf), y + 10), color, -1)
+def draw_bar(frame, x, y, bw, conf, color):
+    cv2.rectangle(frame, (x, y), (x + bw, y + 10), (40, 40, 60), -1)
+    cv2.rectangle(frame, (x, y), (x + int(bw * conf), y + 10), color, -1)
 
-def blend_rect(frame, pt1, pt2, color, alpha=0.75):
-    overlay = frame.copy()
-    cv2.rectangle(overlay, pt1, pt2, color, -1)
-    cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
+def blend_rect(frame, p1, p2, col, alpha=0.5):
+    """Solid rect for ultra-performance on all machines"""
+    cv2.rectangle(frame, p1, p2, col, -1)
 
-def draw_ui(frame, s_label, s_conf, sentence_built, history, fps, hand_ok, current_mode, conflict_pending=None):
+def draw_ui(frame, s_label, s_conf, d_label, d_conf, sentence_built, history, fps, hand_ok, current_mode, elapsed, conflict_pending=None):
     h, w = frame.shape[:2]
 
-    # Top panel
-    blend_rect(frame, (0, 0), (w, 110), (16, 16, 28), alpha=0.82)
+    # Pre-calculate UI values
+    hold_p = min(1.0, elapsed / HOLD_THRESHOLD) if s_label != "-" else 0
+    hold_col = ACCENT_GREEN if hold_p >= 1.0 else (255, 120, 100)
 
-    # FPS badge
-    fps_col = ACCENT_GREEN if fps > 24 else (40, 40, 220)
-    blend_rect(frame, (w - 112, 8), (w - 8, 44), fps_col, alpha=0.9)
-    cv2.putText(frame, f"{fps:.0f} FPS", (w - 107, 33),
-                cv2.FONT_HERSHEY_DUPLEX, 0.70, (10, 10, 20), 2)
+    # 1. LUXURY HEADER (Frosted Glass Effect)
+    blend_rect(frame, (8, 8), (w - 8, 115), BG_DARK, alpha=0.7)
+    cv2.rectangle(frame, (8, 8), (w - 8, 115), (70, 60, 90), 1)
 
-    # Hand dot
-    cv2.circle(frame, (20, 20), 8, ACCENT_GREEN if hand_ok else (60, 60, 180), -1)
-    cv2.putText(frame, "Hand detected" if hand_ok else "No hand",
-                (34, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (200, 200, 200), 1)
+    # Status Badge
+    sh = " ACTIVE" if hand_ok else " SEARCHING..."
+    sc = ACCENT_GREEN if hand_ok else (100, 100, 255)
+    cv2.circle(frame, (35, 38), 7, sc, -1)
+    cv2.putText(frame, f"SYSTEM {sh}", (55, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.55, TEXT_WHITE, 1)
 
-    # Static prediction row
-    cv2.putText(frame, "CURRENT DETECT:", (12, 58),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.46, (140, 200, 160), 1)
-    label_display = s_label.replace("_", " ") if s_label != "-" else "-"
-    cv2.putText(frame, label_display.upper(), (145, 58),
-                cv2.FONT_HERSHEY_DUPLEX, 0.82, ACCENT_GREEN, 2)
-    draw_bar(frame, 12, 64, 260, s_conf, ACCENT_GREEN)
-    cv2.putText(frame, f"{s_conf:.0%}", (278, 74),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.44, ACCENT_GREEN, 1)
+    # FPS with mini-glow
+    cv2.putText(frame, f"CORE SPEED: {fps:.0f}", (w - 180, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (150, 150, 180), 1)
 
-    # Conflict Popup
-    if conflict_pending is not None:
-        blend_rect(frame, (w//2 - 250, h//2 - 100), (w//2 + 250, h//2 + 80), (30, 20, 120), alpha=0.95)
-        cv2.rectangle(frame, (w//2 - 250, h//2 - 100), (w//2 + 250, h//2 + 80), (100, 100, 255), 2)
-        cv2.putText(frame, "AMBIGUOUS SIGN DETECTED!", (w//2 - 180, h//2 - 50),
-                    cv2.FONT_HERSHEY_DUPLEX, 0.7, (180, 180, 255), 2)
-        cv2.putText(frame, f"Did you mean '{conflict_pending[0].upper()}' or '{conflict_pending[1].upper()}'?",
-                    (w//2 - 220, h//2), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-        cv2.putText(frame, f"Press the '{conflict_pending[0].upper()}' or '{conflict_pending[1].upper()}' key to confirm.",
-                    (w//2 - 230, h//2 + 50), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 255, 200), 1)
-
-    # Sentence Box at bottom
-    blend_rect(frame, (0, h - 80), (w, h), (30, 20, 40), alpha=0.95)
+    # --- CENTER: MAIN DETECTOR (Static) ---
+    cp = w // 2
+    cv2.putText(frame, "PRIMARY GESTURE", (cp - 100, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (160, 140, 180), 1)
     
-    # Mode indicator
-    mode_text = f"MODE: [{current_mode}]   (Press '1': Letters  '2': Numbers  '3': All)"
-    cv2.putText(frame, mode_text, (15, h - 60),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 255, 200), 1)
+    label_txt = s_label.replace("_", " ").upper() if s_label != "-" else "---"
+    (tw, th), _ = cv2.getTextSize(label_txt, cv2.FONT_HERSHEY_DUPLEX, 1.2, 3)
+    cv2.putText(frame, label_txt, (cp - tw // 2, 95), cv2.FONT_HERSHEY_DUPLEX, 1.2, ACCENT_GREEN, 3)
+    
+    # Progress Ring/Bar for Hold
+    draw_bar(frame, cp - 120, 105, 240, hold_p, hold_col)
 
-    cv2.putText(frame, "SENTENCE:", (15, h - 35),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (160, 160, 200), 1)
-    cv2.putText(frame, sentence_built, (15, h - 5),
-                cv2.FONT_HERSHEY_DUPLEX, 1.2, (255, 230, 120), 2)
+    # --- SIDES: INTELLIGENCE PANELS ---
+    # Left Side: Stat
+    cv2.putText(frame, "INTENT INFO", (25, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (140, 130, 150), 1)
+    cv2.putText(frame, f"CONF: {s_conf:.0%}", (25, 95), cv2.FONT_HERSHEY_SIMPLEX, 0.55, ACCENT_GREEN, 1)
 
+    # Right Side: Dynamic
+    if d_label and d_label != "-":
+        cv2.putText(frame, "COMMAND DETECTED", (w - 230, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.35, ACCENT_BLUE, 1)
+        d_disp = d_label.replace("_", " ").upper()
+        cv2.putText(frame, d_disp, (w - 230, 100), cv2.FONT_HERSHEY_DUPLEX, 0.6, ACCENT_BLUE, 2)
 
-    # History sidebar
+    # 2. SENTENCE DASHBOARD (Bottom)
+    blend_rect(frame, (8, h - 100), (w - 8, h - 8), (35, 30, 45), alpha=0.9)
+    cv2.rectangle(frame, (8, h - 100), (w - 8, h - 8), (100, 90, 120), 1)
+
+    # Mode Pill
+    m_col = ACCENT_PINK if current_mode == "ALL" else ACCENT_BLUE
+    blend_rect(frame, (25, h - 90), (120, h - 65), m_col, alpha=0.9)
+    cv2.putText(frame, current_mode, (38, h - 72), cv2.FONT_HERSHEY_SIMPLEX, 0.45, BG_DARK, 2)
+
+    # Main Sentence
+    display_sent = sentence_built if sentence_built else "Ready to communicate..."
+    sent_col = TEXT_WHITE if sentence_built else (120, 110, 140)
+    cv2.putText(frame, display_sent, (25, h - 25), cv2.FONT_HERSHEY_DUPLEX, 1.3, sent_col, 2)
+
+    # 3. CONFLICT OVERLAY
+    if conflict_pending is not None:
+        blend_rect(frame, (0, 0), (w, h), (10, 5, 20), alpha=0.7) # Darken screen
+        blend_rect(frame, (w//2 - 260, h//2 - 90), (w//2 + 260, h//2 + 90), BG_DARK, alpha=0.95)
+        cv2.rectangle(frame, (w//2 - 260, h//2 - 90), (w//2 + 260, h//2 + 90), ACCENT_PINK, 2)
+        
+        cv2.putText(frame, "RESOLUTION REQUIRED", (w//2 - 130, h//2 - 50),
+                    cv2.FONT_HERSHEY_DUPLEX, 0.65, ACCENT_PINK, 2)
+        
+        if len(conflict_pending) == 3:
+            msg = "Pick: 5, C, or SPACE?"
+            cv2.putText(frame, msg, (w//2 - 210, h//2 + 10), cv2.FONT_HERSHEY_SIMPLEX, 1.1, TEXT_WHITE, 3)
+            cv2.putText(frame, "Press '5' for 5, 'c' for C, or [Space] for Space.", (w//2 - 210, h//2 + 60), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1)
+        else:
+            msg = f"Pick: {conflict_pending[0].upper()} or {conflict_pending[1].upper()}?"
+            cv2.putText(frame, msg, (w//2 - 190, h//2 + 10), cv2.FONT_HERSHEY_SIMPLEX, 1.1, TEXT_WHITE, 3)
+            cv2.putText(frame, "Press the corresponding key now.", (w//2 - 160, h//2 + 60), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1)
+
+    # 4. RECENT TOASTS (Sidebar)
     if history:
-        ph = 24 + len(history) * 26 + 8
-        blend_rect(frame, (w - 215, 50), (w - 6, 50 + ph), (20, 20, 36), alpha=0.85)
-        cv2.putText(frame, "Recent:", (w - 208, 70),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.50, (160, 160, 220), 1)
-        for i, hl in enumerate(list(history)):
-            fade = max(100, 255 - i * 25)
-            col  = (int(200*fade/255), int(200*fade/255), int(255*fade/255))
-            cv2.putText(frame, f"> {hl}", (w - 208, 92 + i * 26),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.47, col, 1)
-
-    # Controls hint
-    cv2.putText(frame, "Hold sign = Type | '5' = Space | 'Thumbs Down' = Backspace | 'Fist' = Clear", (10, h - 90),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 200, 100), 1)
+        for i, hl in enumerate(list(history)[:5]):
+            y_pos = 140 + i * 45
+            blend_rect(frame, (w - 180, y_pos), (w - 15, y_pos + 35), PANEL_COLOR, alpha=0.9)
+            cv2.putText(frame, str(hl).upper(), (w - 165, y_pos + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_WHITE, 1)
 
     return frame
 
@@ -182,12 +208,18 @@ frame_buffer    = deque(maxlen=SEQUENCE_LENGTH)
 gesture_history = deque(maxlen=HISTORY_MAX)
 
 sentence_built = ""
-frames_held = 0
 last_raw = ""
+gesture_start_time = time.time()
+last_type_time = 0
 s_label, s_conf = "-", 0.0
+d_label, d_conf = "-", 0.0
 prev_time = time.time()
 current_mode = "ALL"  # Options: "ALL", "LETTERS", "NUMBERS"
 conflict_pending = None
+hand_lost_time = 0
+dynamic_cooldown = 0
+frame_count = 0
+wrist_history = deque(maxlen=5) # 5 frames for extreme speed
 
 CONFLICT_MAP = {
     "1": "d", "d": "1",
@@ -214,49 +246,139 @@ while cap.isOpened():
     hand_ok = bool(result.hand_landmarks)
 
     if hand_ok:
+        hand_lost_time = time.time()
         lms = result.hand_landmarks[0]
         draw_hand(frame, lms, h, w)
 
         pts  = normalize_landmarks(lms)
         flat = landmarks_to_flat(pts)
 
-        # Word Builder Logic
-        if static_model is not None:
+        # --- MOTION-LOCK ENGINE ---
+        wrist_history.append((lms[0].x, lms[0].y))
+        
+        # Calculate instant velocity to block static errors
+        moving_fast = False
+        if len(wrist_history) >= 2:
+            vx = abs(wrist_history[-1][0] - wrist_history[-2][0])
+            vy = abs(wrist_history[-1][1] - wrist_history[-2][1])
+            if vx > 0.04 or vy > 0.04: # Hand is in flight
+                moving_fast = True
+
+        if len(wrist_history) == 5 and time.time() > dynamic_cooldown:
+            dx = wrist_history[-1][0] - wrist_history[0][0]
+            dy = wrist_history[-1][1] - wrist_history[0][1]
+            
+            # TRIGGER ACTIONS
+            if abs(dx) > 0.15 and abs(dy) < 0.12: # Horizontal
+                dynamic_cooldown = time.time() + 0.6
+                if dx < 0: # Left
+                    sentence_built = sentence_built[:-1]
+                    d_label, d_conf = "BACKSPACE", 1.0
+                    gesture_history.appendleft("BACKSPACE")
+                else:      # Right
+                    sentence_built += " "
+                    d_label, d_conf = "SPACE", 1.0
+                    gesture_history.appendleft("SPACE")
+                wrist_history.clear()
+                moving_fast = True
+            elif abs(dy) > 0.15 and abs(dx) < 0.12: # Vertical
+                dynamic_cooldown = time.time() + 0.6
+                if dy > 0: # Down
+                    sentence_built = ""
+                    d_label, d_conf = "CLEAR ALL", 1.0
+                    gesture_history.appendleft("CLEAR ALL")
+                else:      # Up (Extra shortcut for Space)
+                    sentence_built += " "
+                    d_label, d_conf = "SPACE", 1.0
+                    gesture_history.appendleft("SPACE")
+                wrist_history.clear()
+                moving_fast = True
+
+        # --- STATIC CLASSIFIER (Only if not moving) ---
+        if moving_fast:
+            s_label, s_conf = "MOVING...", 0.0
+            gesture_start_time = time.time() # Reset timer while moving
+        elif static_model is not None:
             features = extract_advanced_features(flat)
             features_tnsr = tf.convert_to_tensor([features], dtype=tf.float32)
             probs = static_model(features_tnsr, training=False)[0].numpy()
             
             # --- MODE FILTERING ---
-            # Automatically zero-out the confidence of elements we want to ignore
+            filtered_probs = probs.copy()
+            
             for i, class_name in enumerate(static_labels):
                 lbl_lower = str(class_name).lower()
-                if current_mode == "LETTERS" and lbl_lower in "0123456789":
-                    probs[i] = 0.0
-                elif current_mode == "NUMBERS" and lbl_lower in string.ascii_lowercase and len(lbl_lower) == 1:
-                    probs[i] = 0.0
+                is_num = lbl_lower.isdigit()
+                is_letter = (len(lbl_lower) == 1 and lbl_lower.isalpha())
+                is_control = lbl_lower in ["thumbs_down", "fist", "open_hand"]
+                
+                if current_mode == "NUMBERS":
+                    allowed = is_num or is_control or (lbl_lower in CONFLICT_MAP and CONFLICT_MAP[lbl_lower].isdigit())
+                    if not allowed:
+                        filtered_probs[i] = 0.0
+                elif current_mode == "LETTERS":
+                    allowed = is_letter or is_control or (lbl_lower in CONFLICT_MAP and CONFLICT_MAP[lbl_lower].isalpha())
+                    if not allowed:
+                        filtered_probs[i] = 0.0
 
-            if probs.max() >= CONFIDENCE_STATIC:
-                raw_lbl = str(static_labels[np.argmax(probs)]).replace("_", " ")
-                s_conf  = float(probs.max())
+            best_idx = np.argmax(filtered_probs)
+            raw_lbl_tentative = str(static_labels[best_idx]).lower()
+            
+            s_conf = float(probs[best_idx])
+            if raw_lbl_tentative in CONFLICT_MAP:
+                try:
+                    other_lbl = CONFLICT_MAP[raw_lbl_tentative]
+                    other_idx = list(static_labels).index(other_lbl)
+                    s_conf += float(probs[other_idx])
+                except ValueError:
+                    pass
+
+            # --- HAND PHYSICS ENFORCER (Stop C vs 5 Confusion) ---
+            # Calculate spread between Index Tip (8) and Pinky Tip (20)
+            p_index = lms[8]
+            p_pinky = lms[20]
+            spread = np.sqrt((p_index.x - p_pinky.x)**2 + (p_index.y - p_pinky.y)**2)
+            
+            # If spread is large, it MUST be 5 or Space, NOT a curved C
+            is_spread_open = spread > 0.16 # Sharpened threshold (was 0.14)
+            
+            if is_spread_open and raw_lbl_tentative.lower() == "c":
+                raw_lbl = "5" # Force to 5 if hand is open
+                lbl_lower = "5"
+            elif not is_spread_open and raw_lbl_tentative.lower() in ["5", "open hand"]:
+                raw_lbl = "C" # Force to C if hand is curved
+                lbl_lower = "c"
+            else:
+                raw_lbl = str(static_labels[best_idx]).replace("_", " ")
+                lbl_lower = raw_lbl.lower()
+                
+                if current_mode == "LETTERS" and lbl_lower in CONFLICT_MAP and lbl_lower.isdigit():
+                    raw_lbl = CONFLICT_MAP[lbl_lower].upper()
+                    lbl_lower = raw_lbl.lower()
+                elif current_mode == "NUMBERS" and lbl_lower in CONFLICT_MAP and lbl_lower.isalpha():
+                    raw_lbl = CONFLICT_MAP[lbl_lower].upper()
+                    lbl_lower = raw_lbl.lower()
+
                 s_label = raw_lbl
                 
-                if raw_lbl == last_raw:
-                    frames_held += 1
-                else:
-                    frames_held = 0
+                if raw_lbl != last_raw:
+                    gesture_start_time = time.time()
                     last_raw = raw_lbl
                 
-                # If held steady for 6 frames (~0.4 seconds), register the character!
-                if frames_held == 6 and conflict_pending is None:
+                elapsed = time.time() - gesture_start_time
+                
+                if elapsed >= HOLD_THRESHOLD and (time.time() - last_type_time) >= TYPE_COOLDOWN and conflict_pending is None and time.time() > dynamic_cooldown:
                     lbl_lower = raw_lbl.lower()
+                    last_type_time = time.time()
                     
+                    # Removed 5/C/Space conflict popup to keep them separate
                     if current_mode == "ALL" and lbl_lower in CONFLICT_MAP:
-                        # Enter conflict resolution state
                         conflict_pending = (lbl_lower, CONFLICT_MAP[lbl_lower])
-                        frames_held = -30  # Prevent re-triggering while resolving
                     else:
-                        if raw_lbl in ["open hand", "open hand / 5", "5"]:
-                            sentence_built += " "
+                        if raw_lbl in ["5", "open hand"]:
+                            sentence_built += "5"
+                        elif raw_lbl == "c":
+                            sentence_built += "c"
                         elif raw_lbl == "thumbs down":
                             sentence_built = sentence_built[:-1]
                         elif raw_lbl in ["fist", "fist / a / s"]:
@@ -269,33 +391,50 @@ while cap.isOpened():
                                 sentence_built += letter
                         
                         gesture_history.appendleft(raw_lbl)
-                        frames_held = -5
-            else:
-                s_label, s_conf = "-", 0.0
-                frames_held = 0
+
     else:
+        # No hand detected
         s_label, s_conf = "-", 0.0
-        frames_held = 0
+        gesture_start_time = time.time()
+        d_label, d_conf = "-", 0.0
+        # Only clear the buffer if hand is gone for more than 0.5 seconds
+        if time.time() - hand_lost_time > 0.5:
+            frame_buffer.clear()
 
     now       = time.time()
     fps       = 1.0 / (now - prev_time + 1e-9)
     prev_time = now
 
-    draw_ui(frame, s_label, s_conf, sentence_built, gesture_history, fps, hand_ok, current_mode, conflict_pending)
+    elapsed_val = time.time() - gesture_start_time if hand_ok and s_label != "-" else 0
+    draw_ui(frame, s_label, s_conf, d_label, d_conf, sentence_built, gesture_history, fps, hand_ok, current_mode, elapsed_val, conflict_pending)
     cv2.imshow("Hand Gesture Recognition", frame)
     
     key = cv2.waitKey(1) & 0xFF
     
     if conflict_pending is not None:
         if key != 255: # A key was pressed
-            c1, c2 = conflict_pending
-            key_char = chr(key).lower()
-            if key_char == c1:
-                sentence_built += c1
-                conflict_pending = None
-            elif key_char == c2:
-                sentence_built += c2
-                conflict_pending = None
+            if conflict_pending == ('5', 'c', 'space'):
+                if key == ord('5'):
+                    sentence_built += "5"
+                    gesture_history.appendleft("5")
+                    conflict_pending = None
+                elif key == ord('c'):
+                    sentence_built += "C"
+                    gesture_history.appendleft("C")
+                    conflict_pending = None
+                elif key == ord(' '):
+                    sentence_built += " "
+                    gesture_history.appendleft("SPACE")
+                    conflict_pending = None
+            else:
+                c1, c2 = conflict_pending
+                key_char = chr(key).lower()
+                if key_char == c1:
+                    sentence_built += c1
+                    conflict_pending = None
+                elif key_char == c2:
+                    sentence_built += c2
+                    conflict_pending = None
     else:
         if key == ord("q"):
             break

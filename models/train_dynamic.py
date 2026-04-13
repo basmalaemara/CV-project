@@ -32,10 +32,17 @@ X, y = load_dynamic_dataset()    # (N, 30, 63)
 lb = LabelBinarizer()
 y_ohe = lb.fit_transform(y)
 
-X_train, X_val, y_train, y_val = train_test_split(
-    X, y_ohe, test_size=0.2, random_state=42, stratify=y
-)
-print(f"Train: {X_train.shape}  |  Val: {X_val.shape}")
+# Handle very small datasets (e.g. during early collection)
+test_size = 0.2 if len(X) > 10 else 0.1
+try:
+    X_train, X_val, y_train, y_val = train_test_split(
+        X, y_ohe, test_size=test_size, random_state=42, stratify=y_ohe if len(X) > 10 else None
+    )
+except Exception:
+    # If stratification still fails (e.g. single sample class), just split randomly
+    X_train, X_val, y_train, y_val = train_test_split(X, y_ohe, test_size=test_size, random_state=42)
+
+print(f"Dataset Size: {len(X)} | Train: {X_train.shape}  |  Val: {X_val.shape}")
 
 # ── Build LSTM ────────────────────────────────────────────────────────────────
 model = models.Sequential(

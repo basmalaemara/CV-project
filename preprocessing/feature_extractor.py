@@ -89,8 +89,15 @@ def load_static_dataset(data_dir="data/static"):
         df = pd.read_csv(csv_file)
         all_dfs.append(df)
     data = pd.concat(all_dfs, ignore_index=True)
-    X = data.drop("gesture_id", axis=1).values.astype(np.float32)
+    
+    # Safely drop target columns to get features
+    to_drop = ["gesture_id", "label"]
+    existing_to_drop = [c for c in to_drop if c in data.columns]
+    X = data.drop(existing_to_drop, axis=1).values.astype(np.float32)
+    
+    # Use gesture_id as target
     y = data["gesture_id"].values.astype(int)
+    
     print(f"[static] Loaded {X.shape[0]} samples across {len(set(y))} classes.")
     return X, y
 

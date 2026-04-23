@@ -50,13 +50,13 @@ Or use the automated setup script:
 
 ```powershell
 # 1. Collect static gesture data
-python collect_static_gestures.py
+python scripts/collect_static_gestures.py
 
 # 2. Collect dynamic gesture data
-python collect_dynamic_gestures.py
+python scripts/collect_dynamic_gestures.py
 
 # 3. Split dynamic data into train/test (prevents data leakage)
-python prepare_dynamic_data.py
+python scripts/prepare_dynamic_data.py
 
 # 4. Train static Residual MLP
 python models/train_static.py
@@ -129,10 +129,14 @@ project/
 │   ├── comparison_static.txt
 │   ├── comparison_dynamic.txt
 │   └── figures/                   # All plots (PNG)
-├── collect_static_gestures.py
-├── collect_dynamic_gestures.py
-├── prepare_dynamic_data.py
-├── augment_dynamic_gestures.py
+├── scripts/
+│   ├── collect_static_gestures.py
+│   ├── collect_dynamic_gestures.py
+│   ├── prepare_dynamic_data.py
+│   ├── augment_dynamic_gestures.py
+│   ├── extract_from_video.py
+│   ├── extract_jester.py
+│   └── extract_landmarks_from_images.py
 ├── requirements.txt
 └── setup_env.ps1
 ```

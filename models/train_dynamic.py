@@ -26,27 +26,27 @@ from tensorflow.keras import layers, models, callbacks
 os.makedirs("models", exist_ok=True)
 os.makedirs("docs/figures", exist_ok=True)
 
-# ── Load data ─────────────────────────────────────────────────────────────────
-X, y = load_dynamic_dataset()    # (N, 30, 63)
+                                                                                
+X, y = load_dynamic_dataset()                 
 
-# ── Data Augmentation for Dynamic Sequences ───────────────────────────────────
+                                                                                
 X_aug_list = [X]
 y_aug_list = [y]
 
 for _ in range(8):
-    # 1. Time warping: randomly speed up/slow down parts of the sequence
+                                                                        
     X_warped = X.copy()
     noise = np.random.normal(0, 0.015, size=X.shape)
     X_warped = X_warped + noise
     
-    # 2. Random scaling
+                       
     scale = np.random.uniform(0.85, 1.15, size=(X.shape[0], 1, 1))
     X_warped = X_warped * scale
     
     X_aug_list.append(X_warped)
     y_aug_list.append(y)
 
-# 3. Reverse time sequences (play gesture backwards)
+                                                    
 X_reversed = X[:, ::-1, :]
 X_aug_list.append(X_reversed)
 y_aug_list.append(y)
@@ -57,28 +57,28 @@ y_all = np.concatenate(y_aug_list)
 lb = LabelBinarizer()
 y_ohe = lb.fit_transform(y_all)
 
-# Handle very small datasets (e.g. during early collection)
+                                                           
 test_size = 0.2 if len(X_all) > 10 else 0.1
 try:
     X_train, X_val, y_train, y_val = train_test_split(
         X_all, y_ohe, test_size=test_size, random_state=42, stratify=y_all
     )
 except Exception:
-    # If stratification still fails (e.g. single sample class), just split randomly
+                                                                                   
     X_train, X_val, y_train, y_val = train_test_split(X_all, y_ohe, test_size=test_size, random_state=42)
 
 print(f"Dataset Size: {len(X_all)} (original: {len(X)}) | Train: {X_train.shape}  |  Val: {X_val.shape}")
 
-# ── Build Bidirectional LSTM with Attention ──────────────────────────────────
+                                                                               
 inp = layers.Input(shape=(30, 63))
 
-# Attention via GlobalAveragePooling (no Lambda — serialization-safe)
+                                                                     
 x = layers.Bidirectional(layers.LSTM(64, return_sequences=True))(inp)
 x = layers.Dropout(0.3)(x)
 x = layers.Bidirectional(layers.LSTM(32, return_sequences=True))(x)
 x = layers.Dropout(0.3)(x)
 
-# Weighted pooling via learned attention gate
+                                             
 attn = layers.Dense(1, activation='sigmoid')(x)
 x = layers.Multiply()([x, attn])
 x = layers.GlobalAveragePooling1D()(x)
@@ -98,7 +98,7 @@ model.compile(
 )
 model.summary()
 
-# ── Train ─────────────────────────────────────────────────────────────────────
+                                                                                
 history = model.fit(
     X_train,
     y_train,
@@ -116,7 +116,7 @@ history = model.fit(
     verbose=1,
 )
 
-# ── Save ──────────────────────────────────────────────────────────────────────
+                                                                                
 model.save("models/point_history_classifier.keras")
 np.save("models/dynamic_class_labels.npy", lb.classes_)
 
@@ -126,7 +126,7 @@ print(f"\n[DONE] Dynamic model saved -> models/point_history_classifier.keras")
 print(f"       Best Train Acc: {best_train:.4f}")
 print(f"       Best Val   Acc: {best_val:.4f}")
 
-# ── Plot ──────────────────────────────────────────────────────────────────────
+                                                                                
 fig, axes = plt.subplots(1, 2, figsize=(13, 4))
 fig.suptitle(f"Dynamic Gesture BiLSTM+Attention | Best Val Acc: {best_val:.2%}", fontsize=14)
 

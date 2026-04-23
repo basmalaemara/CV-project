@@ -34,7 +34,7 @@ from preprocessing.feature_extractor import (
 
 os.makedirs("docs/figures", exist_ok=True)
 
-# ── Report buffer ─────────────────────────────────────────────────────────────
+                                                                                
 _report_lines = []
 
 def log(text=""):
@@ -50,7 +50,7 @@ def save_report():
         f.write("\n".join(_report_lines))
     print("\n[SAVED] docs/evaluation_report.txt")
 
-# ── Shared confusion matrix plotter ──────────────────────────────────────────
+                                                                               
 def plot_confusion_matrix(cm, labels, title, save_path, figsize, annot_size):
     fig, ax = plt.subplots(figsize=figsize)
     sns.heatmap(
@@ -66,7 +66,7 @@ def plot_confusion_matrix(cm, labels, title, save_path, figsize, annot_size):
     plt.close()
     log(f"[SAVED] {save_path}")
 
-# ── Per-class accuracy table (sorted worst → best) ────────────────────────────
+                                                                                
 def per_class_accuracy_table(cm, labels, model_name):
     log(f"\n-- Per-Class Accuracy  (worst -> best)  [{model_name}] --")
     log(f"\n  {'Class':<22} {'Correct':>7} {'Total':>7}  {'Accuracy':>9}")
@@ -82,11 +82,11 @@ def per_class_accuracy_table(cm, labels, model_name):
         acc_str = f"{acc * 100:.1f}%" if acc is not None else "n/a"
         log(f"  {lbl:<22} {correct:>7} {total:>7}  {acc_str:>9}")
 
-# ════════════════════════════════════════════════════════════════════════════
-# 1. STATIC MODEL
-#    Load data the same way train_static.py does — using the "label" column
-#    directly from CSVs. This avoids the broken gesture_id integer mapping.
-# ════════════════════════════════════════════════════════════════════════════
+                                                                              
+                 
+                                                                           
+                                                                           
+                                                                              
 log("\n" + "=" * 60)
 log("  STATIC GESTURE EVALUATION")
 log("=" * 60)
@@ -117,7 +117,7 @@ static_model  = tf.keras.models.load_model("models/keypoint_classifier.keras")
 static_labels = np.load("models/static_class_labels.npy")
 label_to_idx  = {lbl: i for i, lbl in enumerate(static_labels)}
 
-# Map string labels → model class indices (direct lookup, no integer detour)
+                                                                            
 y_idx   = np.array([label_to_idx.get(lbl, -1) for lbl in y_str])
 valid   = y_idx >= 0
 X_full  = X_full[valid]
@@ -158,19 +158,19 @@ for fold, (_, test_idx) in enumerate(skf.split(X_full, y_idx)):
     log(f"  Fold {fold + 1}: {acc:.4f}")
 log(f"\n  CV Accuracy: {np.mean(cv_acc):.4f} ± {np.std(cv_acc):.4f}")
 
-# ════════════════════════════════════════════════════════════════════════════
-# 2. DYNAMIC MODEL
-#    Evaluate ONLY on original sequences (before augmentation).
-#    Augmented files are derived from originals — including them in the test
-#    set causes data leakage and inflates accuracy to 100%.
-#    Originals = the first N_ORIG files per class (lowest filename indices).
-# ════════════════════════════════════════════════════════════════════════════
+                                                                              
+                  
+                                                               
+                                                                            
+                                                           
+                                                                            
+                                                                              
 try:
     log("\n" + "=" * 60)
     log("  DYNAMIC GESTURE EVALUATION  (originals only — no augmented)")
     log("=" * 60)
 
-    # Load ONLY from the pristine test split (never seen during training)
+                                                                         
     DYNAMIC_TEST_DIR = "data/dynamic_test"
     DYNAMIC_TRAIN_DIR = "data/dynamic"
 
@@ -180,7 +180,7 @@ try:
         DYNAMIC_TEST_DIR = DYNAMIC_TRAIN_DIR
         N_ORIG = 21
     else:
-        N_ORIG = None   # load all files in test dir
+        N_ORIG = None                               
 
     X_d, y_d = [], []
     for gid, label in DYNAMIC_LABELS.items():
@@ -201,7 +201,7 @@ try:
     y_d = np.array(y_d, dtype=int)
     log(f"\n  Test set: {len(y_d)} pristine sequences from {DYNAMIC_TEST_DIR}")
 
-    # Use all test sequences — no further splitting needed
+                                                          
     X_d_test, y_d_test = X_d, y_d
 
     dynamic_model  = tf.keras.models.load_model("models/point_history_classifier.keras")
@@ -224,7 +224,7 @@ try:
     )
     per_class_accuracy_table(cm_d, str_dyn_labels, "Dynamic")
 
-    # CV on the pristine test set (leave-one-out if small, else 5-fold)
+                                                                       
     n_splits = min(5, len(y_d_test))
     log(f"\n-- {n_splits}-Fold Cross-Validation on test set  [Dynamic] --")
     kf   = KFold(n_splits=n_splits, shuffle=True, random_state=42)
@@ -239,7 +239,7 @@ try:
 except FileNotFoundError as e:
     log(f"WARNING: Skipping dynamic evaluation: {e}")
 
-# ── Summary ───────────────────────────────────────────────────────────────────
+                                                                                
 log("\n" + "=" * 60)
 log("  SUMMARY")
 log("=" * 60)

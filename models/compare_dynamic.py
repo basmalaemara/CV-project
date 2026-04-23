@@ -33,7 +33,7 @@ from tensorflow.keras import layers, models, callbacks
 
 os.makedirs("docs/figures", exist_ok=True)
 
-# ── Load & augment data (same as train_dynamic.py) ────────────────────────────
+                                                                                
 print("Loading dynamic data ...")
 X, y = load_dynamic_dataset()
 
@@ -43,7 +43,7 @@ for _ in range(8):
     scale = np.random.uniform(0.85, 1.15, size=(X.shape[0], 1, 1))
     X_aug.append((X + noise) * scale)
     y_aug.append(y)
-X_aug.append(X[:, ::-1, :])   # reverse time
+X_aug.append(X[:, ::-1, :])                 
 y_aug.append(y)
 
 X_all = np.vstack(X_aug).astype(np.float32)
@@ -67,7 +67,7 @@ SEQ, FEAT = X_all.shape[1], X_all.shape[2]
 print(f"  Sequences: {len(X_all)}  |  Classes: {n_classes}  |  "
       f"Train: {len(X_train)}  Test: {len(X_test)}\n")
 
-# ── Training helper ───────────────────────────────────────────────────────────
+                                                                                
 CB = [
     callbacks.EarlyStopping(monitor="val_accuracy", patience=20,
                             restore_best_weights=True, verbose=0),
@@ -90,7 +90,7 @@ def train_eval(name, model):
 results = []
 print("-" * 60)
 
-# 1. Flat MLP — no temporal awareness
+                                     
 inp = layers.Input(shape=(SEQ, FEAT))
 x = layers.Flatten()(inp)
 x = layers.Dense(256, activation="relu")(x)
@@ -102,7 +102,7 @@ acc, t = train_eval("Flat MLP (no temporal order)",
                     models.Model(inp, out, name="FlatMLP"))
 results.append({"Model": "Flat MLP (no temporal order)", "Accuracy": acc, "Time_s": t})
 
-# 2. Simple LSTM — unidirectional, no attention
+                                               
 inp = layers.Input(shape=(SEQ, FEAT))
 x = layers.LSTM(64)(inp)
 x = layers.Dropout(0.3)(x)
@@ -112,7 +112,7 @@ acc, t = train_eval("Simple LSTM (unidirectional)",
                     models.Model(inp, out, name="SimpleLSTM"))
 results.append({"Model": "Simple LSTM (unidirectional)", "Accuracy": acc, "Time_s": t})
 
-# 3. GRU
+        
 inp = layers.Input(shape=(SEQ, FEAT))
 x = layers.Bidirectional(layers.GRU(64, return_sequences=False))(inp)
 x = layers.Dropout(0.3)(x)
@@ -122,7 +122,7 @@ acc, t = train_eval("Bidirectional GRU",
                     models.Model(inp, out, name="BiGRU"))
 results.append({"Model": "Bidirectional GRU", "Accuracy": acc, "Time_s": t})
 
-# 4. 1D CNN
+           
 inp = layers.Input(shape=(SEQ, FEAT))
 x = layers.Conv1D(64, kernel_size=3, activation="relu", padding="same")(inp)
 x = layers.MaxPooling1D(2)(x)
@@ -135,7 +135,7 @@ acc, t = train_eval("1D CNN (temporal convolution)",
                     models.Model(inp, out, name="CNN1D"))
 results.append({"Model": "1D CNN (temporal convolution)", "Accuracy": acc, "Time_s": t})
 
-# 5. Our model — load already-trained weights
+                                             
 print(f"  {'Our BiLSTM + Attention (loaded)':<38}", end="  ")
 t0 = time.time()
 our_model = tf.keras.models.load_model(
@@ -148,7 +148,7 @@ results.append({"Model": "Our BiLSTM + Attention (loaded)",
 
 print("-" * 60)
 
-# ── Save text report ──────────────────────────────────────────────────────────
+                                                                                
 ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 report_lines = [
     f"Dynamic Model Comparison Report — {ts}",
@@ -178,7 +178,7 @@ with open("docs/comparison_dynamic.txt", "w", encoding="utf-8") as f:
     f.write("\n".join(report_lines))
 print("\n[SAVED] docs/comparison_dynamic.txt")
 
-# ── Plot ──────────────────────────────────────────────────────────────────────
+                                                                                
 fig, ax = plt.subplots(figsize=(10, 5))
 colors = ["#888888"] * (len(results) - 1) + ["#4C9BE8"]
 bars = ax.barh([r["Model"] for r in results],

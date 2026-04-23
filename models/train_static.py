@@ -35,7 +35,7 @@ except ImportError:
 os.makedirs("models", exist_ok=True)
 os.makedirs("docs/figures", exist_ok=True)
 
-# ── Load data — auto-detect classes ──────────────────────────────────────────
+                                                                               
 print("Loading data from data/static/ ...")
 all_dfs = []
 for csv_file in sorted(glob.glob("data/static/*.csv")):
@@ -49,7 +49,7 @@ if not all_dfs:
 
 data = pd.concat(all_dfs, ignore_index=True)
 
-# Support both 'label' column (ASL dataset) and numeric gesture_id (custom)
+                                                                           
 if "label" in data.columns:
     from preprocessing.feature_extractor import GESTURE_LABELS
     missing_mask = data["label"].isna()
@@ -60,11 +60,11 @@ else:
     data["label"] = data["gesture_id"].astype(str)
     X_raw = data.drop("gesture_id", axis=1).values.astype(np.float32)
 
-# Removed class grouping so the user can keep numbers and letters distinct!
-# They will rely on making distinct poses during data collection to differentiate them.
+                                                                           
+                                                                                       
 y_raw_list = data["label"].astype(str).str.lower().values
 
-# ── Class distribution BEFORE augmentation ───────────────────────────────────
+                                                                               
 print("\n--- Class Distribution (original data) ---")
 unique_raw, counts_raw = np.unique(y_raw_list, return_counts=True)
 underrepresented = set()
@@ -75,12 +75,12 @@ for lbl, cnt in sorted(zip(unique_raw, counts_raw), key=lambda x: x[1]):
         underrepresented.add(lbl)
 print(f"\n  Total: {len(y_raw_list)} samples | {len(unique_raw)} classes")
 
-# ── Step 3: Data Augmentation (Rotation, Jitter, Noise, Scaling, Mirror) ────
+                                                                              
 X_aug_list = [X_raw]
 y_final_list = [y_raw_list]
 
-for i in range(12):  # Increased from 8 to 12 for richer diversity
-    # 1. Random Rotation (+/- 20 degrees, widened from 15)
+for i in range(12):                                               
+                                                          
     angle = np.random.uniform(-20, 20) * (np.pi / 180.0)
     cos_a, sin_a = np.cos(angle), np.sin(angle)
     
@@ -90,26 +90,26 @@ for i in range(12):  # Increased from 8 to 12 for richer diversity
     rotated_pts[:, :, 1] = pts[:, :, 0] * sin_a + pts[:, :, 1] * cos_a
     X_rot = rotated_pts.reshape(X_raw.shape)
 
-    # 2. 2% random gaussian noise (slightly increased)
+                                                      
     noise = np.random.normal(loc=0.0, scale=0.020, size=X_rot.shape)
     
-    # 3. Random size scaling between 80% and 120%
+                                                 
     scale = np.random.uniform(0.80, 1.20, size=(X_rot.shape[0], 1))
     
     noisy_scaled_X = (X_rot + noise) * scale
     X_aug_list.append(noisy_scaled_X)
     y_final_list.append(y_raw_list)
 
-# 4. Horizontal Mirror augmentation (flip X axis) — doubles variety
+                                                                   
 pts_mirror = X_raw.reshape(-1, 21, 3).copy()
-pts_mirror[:, :, 0] = -pts_mirror[:, :, 0]  # Flip X coordinates
+pts_mirror[:, :, 0] = -pts_mirror[:, :, 0]                      
 X_aug_list.append(pts_mirror.reshape(X_raw.shape))
 y_final_list.append(y_raw_list)
 
 X_augmented = np.vstack(X_aug_list).astype(np.float32)
 y_raw = np.concatenate(y_final_list)
 
-# Now calculate angles and distances on the massive augmented dataset!
+                                                                      
 X = extract_advanced_features(X_augmented)
 
 lb    = LabelBinarizer()
@@ -124,7 +124,7 @@ print(f"Train: {X_train.shape[0]}  |  Val: {X_val.shape[0]}\n")
 
 y_train_idx = np.argmax(y_train, axis=1)
 
-# ── SMOTE for underrepresented classes (training only) ────────────────────────
+                                                                                
 if SMOTE_AVAILABLE and underrepresented:
     under_indices    = {i for i, l in enumerate(lb.classes_) if l in underrepresented}
     unique_tr, counts_tr = np.unique(y_train_idx, return_counts=True)
@@ -138,40 +138,40 @@ if SMOTE_AVAILABLE and underrepresented:
     y_train          = lb.transform(lb.classes_[y_train_idx])
     print(f"  SMOTE applied — training set: {len(y_train_idx)} samples")
 
-# ── Class weights ─────────────────────────────────────────────────────────────
+                                                                                
 cw_arr         = compute_class_weight("balanced", classes=np.arange(y_train.shape[1]),
                                       y=np.argmax(y_train, axis=1))
 class_weight_dict = dict(enumerate(cw_arr))
 
-# ── Build Enhanced MLP with Residual Connection ──────────────────────────────
+                                                                               
 n_classes = y_ohe.shape[1]
 n_features = X.shape[1]
 
 inp = layers.Input(shape=(n_features,))
 
-# Block 1
+         
 x = layers.Dense(512, activation="relu", kernel_regularizer=tf.keras.regularizers.l2(0.0003))(inp)
 x = layers.BatchNormalization()(x)
 x = layers.Dropout(0.25)(x)
 
-# Block 2
+         
 x = layers.Dense(256, activation="relu", kernel_regularizer=tf.keras.regularizers.l2(0.0003))(x)
 x = layers.BatchNormalization()(x)
 x = layers.Dropout(0.25)(x)
 
-# Residual block
+                
 res = layers.Dense(128, activation="relu")(x)
 res = layers.BatchNormalization()(res)
 res = layers.Dropout(0.15)(res)
-res = layers.Dense(256, activation="relu")(res)  # Project back to 256
-x = layers.Add()([x, res])  # Skip connection
+res = layers.Dense(256, activation="relu")(res)                       
+x = layers.Add()([x, res])                   
 
-# Block 3
+         
 x = layers.Dense(128, activation="relu")(x)
 x = layers.BatchNormalization()(x)
 x = layers.Dropout(0.15)(x)
 
-# Block 4
+         
 x = layers.Dense(64, activation="relu")(x)
 x = layers.BatchNormalization()(x)
 
@@ -179,7 +179,7 @@ out = layers.Dense(n_classes, activation="softmax")(x)
 
 model = models.Model(inputs=inp, outputs=out, name="KeypointClassifier_v2")
 
-# Cosine Decay Learning Rate for smoother convergence
+                                                     
 lr_schedule = tf.keras.optimizers.schedules.CosineDecay(
     initial_learning_rate=1e-3,
     decay_steps=150 * (X_train.shape[0] // 64),
@@ -188,12 +188,12 @@ lr_schedule = tf.keras.optimizers.schedules.CosineDecay(
 
 model.compile(
     optimizer=tf.keras.optimizers.Adam(learning_rate=lr_schedule),
-    loss=tf.keras.losses.CategoricalCrossentropy(label_smoothing=0.05),  # Label smoothing!
+    loss=tf.keras.losses.CategoricalCrossentropy(label_smoothing=0.05),                    
     metrics=["accuracy"],
 )
 model.summary()
 
-# ── Train ─────────────────────────────────────────────────────────────────────
+                                                                                
 history = model.fit(
     X_train, y_train,
     validation_data=(X_val, y_val),
@@ -209,7 +209,7 @@ history = model.fit(
     verbose=1,
 )
 
-# ── Per-class accuracy on validation set ─────────────────────────────────────
+                                                                               
 print("\n--- Per-Class Accuracy on Validation Set (worst → best) ---")
 y_val_idx  = np.argmax(y_val, axis=1)
 y_val_pred = np.argmax(model.predict(X_val, verbose=0), axis=1)
@@ -224,7 +224,7 @@ for lbl, acc, total in sorted(rows, key=lambda x: (x[1] is None, x[1] if x[1] is
     flag    = " ⚠️" if acc is not None and acc < 0.85 else ""
     print(f"  {lbl:<20} {acc_str:>7}  (n={total}){flag}")
 
-# ── Save ──────────────────────────────────────────────────────────────────────
+                                                                                
 model.save("models/keypoint_classifier.keras")
 np.save("models/static_class_labels.npy", lb.classes_)
 
@@ -235,7 +235,7 @@ print(f"       Classes ({len(lb.classes_)}): {list(lb.classes_)}")
 print(f"       Best Train Acc: {best_train:.4f}")
 print(f"       Best Val   Acc: {best_val:.4f}")
 
-# ── Plot ──────────────────────────────────────────────────────────────────────
+                                                                                
 fig, axes = plt.subplots(1, 2, figsize=(13, 4))
 fig.suptitle(f"MLP Training - {len(lb.classes_)} classes | Best Val Acc: {best_val:.2%}", fontsize=14)
 

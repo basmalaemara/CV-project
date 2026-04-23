@@ -38,7 +38,7 @@ import tensorflow as tf
 
 os.makedirs("docs/figures", exist_ok=True)
 
-# ── Load & prepare data (same pipeline as train_static.py) ───────────────────
+                                                                               
 print("Loading static data ...")
 all_dfs = []
 for csv_file in sorted(glob.glob("data/static/*.csv")):
@@ -60,7 +60,7 @@ else:
     X_raw = data.drop("gesture_id", axis=1).values.astype(np.float32)
 
 y_str = data["label"].astype(str).str.lower().values
-X_adv = extract_advanced_features(X_raw)   # 273-dim features (our best)
+X_adv = extract_advanced_features(X_raw)                                
 
 le = LabelEncoder()
 y_enc = le.fit_transform(y_str)
@@ -69,7 +69,7 @@ n_classes = len(le.classes_)
 X_train, X_test, y_train, y_test = train_test_split(
     X_adv, y_enc, test_size=0.2, random_state=42, stratify=y_enc
 )
-# Raw 63-dim features for fair comparison with shallow MLP
+                                                          
 X_train_raw, X_test_raw, _, _ = train_test_split(
     X_raw, y_enc, test_size=0.2, random_state=42, stratify=y_enc
 )
@@ -77,7 +77,7 @@ X_train_raw, X_test_raw, _, _ = train_test_split(
 print(f"  Samples: {len(y_enc)}  |  Classes: {n_classes}  |  "
       f"Train: {len(y_train)}  Test: {len(y_test)}\n")
 
-# ── Define competing models ───────────────────────────────────────────────────
+                                                                                
 results = []
 
 def evaluate(name, model, X_tr, X_te, y_tr, y_te, is_keras=False):
@@ -99,34 +99,34 @@ def evaluate(name, model, X_tr, X_te, y_tr, y_te, is_keras=False):
 
 print("-" * 60)
 
-# 1. Logistic Regression (on 273-dim features)
+                                              
 evaluate("Logistic Regression",
          LogisticRegression(max_iter=1000, C=1.0, solver="lbfgs",
                             multi_class="multinomial", random_state=42),
          X_train, X_test, y_train, y_test)
 
-# 2. KNN
+        
 evaluate("K-Nearest Neighbours (k=5)",
          KNeighborsClassifier(n_neighbors=5, metric="euclidean"),
          X_train, X_test, y_train, y_test)
 
-# 3. Random Forest
+                  
 evaluate("Random Forest (200 trees)",
          RandomForestClassifier(n_estimators=200, random_state=42, n_jobs=-1),
          X_train, X_test, y_train, y_test)
 
-# 4. SVM RBF (on raw 63-dim — SVM doesn't scale well to 273-dim + 12k samples)
+                                                                              
 evaluate("SVM (RBF kernel, raw 63-dim)",
          SVC(kernel="rbf", C=10, gamma="scale", random_state=42),
          X_train_raw, X_test_raw, y_train, y_test)
 
-# 5. Shallow MLP — no residuals, no advanced features, raw 63-dim input
+                                                                       
 evaluate("Shallow MLP (raw 63-dim, no residuals)",
          MLPClassifier(hidden_layer_sizes=(256, 128), max_iter=200,
                        random_state=42, early_stopping=True),
          X_train_raw, X_test_raw, y_train, y_test)
 
-# 6. Our model (already trained — just load and evaluate)
+                                                         
 print(f"  {'Our Residual MLP (273-dim feat.)':<35}", end="  ")
 t0 = time.time()
 our_model = tf.keras.models.load_model("models/keypoint_classifier.keras", safe_mode=False)
@@ -137,7 +137,7 @@ results.append({"Model": "Our Residual MLP (273-dim feat.)", "Accuracy": our_acc
 
 print("-" * 60)
 
-# ── Save text report ──────────────────────────────────────────────────────────
+                                                                                
 os.makedirs("docs", exist_ok=True)
 ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 report_lines = [
@@ -166,7 +166,7 @@ with open("docs/comparison_static.txt", "w", encoding="utf-8") as f:
     f.write("\n".join(report_lines))
 print("\n[SAVED] docs/comparison_static.txt")
 
-# ── Plot bar chart ─────────────────────────────────────────────────────────────
+                                                                                 
 fig, ax = plt.subplots(figsize=(11, 5))
 colors = ["#888888"] * (len(results) - 1) + ["#4CE87A"]
 bars = ax.barh([r["Model"] for r in results],

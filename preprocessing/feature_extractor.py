@@ -61,14 +61,14 @@ def extract_advanced_features(X_flat):
     
     features = [X_flat]
     
-    # Fully vectorized pairwise distance calculation using broadcasting!
-    # pts expands to (N, 21, 1, 3) and (N, 1, 21, 3)
+                                                                        
+                                                    
     diff = pts[:, :, np.newaxis, :] - pts[:, np.newaxis, :, :]
-    dist_matrix = np.linalg.norm(diff, axis=-1)  # shape (N, 21, 21)
+    dist_matrix = np.linalg.norm(diff, axis=-1)                     
     
-    # Extract the upper triangle (the 210 unique pairs)
+                                                       
     i_indices, j_indices = np.triu_indices(21, k=1)
-    distances = dist_matrix[:, i_indices, j_indices]  # shape (N, 210)
+    distances = dist_matrix[:, i_indices, j_indices]                  
     
     features.append(distances)
     res = np.hstack(features)
@@ -90,12 +90,12 @@ def load_static_dataset(data_dir="data/static"):
         all_dfs.append(df)
     data = pd.concat(all_dfs, ignore_index=True)
     
-    # Safely drop target columns to get features
+                                                
     to_drop = ["gesture_id", "label"]
     existing_to_drop = [c for c in to_drop if c in data.columns]
     X = data.drop(existing_to_drop, axis=1).values.astype(np.float32)
     
-    # Use gesture_id as target
+                              
     y = data["gesture_id"].values.astype(int)
     
     print(f"[static] Loaded {X.shape[0]} samples across {len(set(y))} classes.")
@@ -112,7 +112,7 @@ def load_dynamic_dataset(data_dir="data/dynamic"):
             "Run collect_dynamic_gestures.py first."
         )
     for npy_file in npy_files:
-        arr = np.load(npy_file)  # expected shape: (30, 63)
+        arr = np.load(npy_file)                            
         gesture_id = int(os.path.basename(npy_file).split("_")[0])
         X.append(arr)
         y.append(gesture_id)

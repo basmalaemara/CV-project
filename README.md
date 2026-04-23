@@ -1,28 +1,34 @@
 # Hand Gesture Recognition
 
-A real-time Computer Vision system that detects and classifies hand gestures using MediaPipe and deep learning (MLP + LSTM).
+A real-time Computer Vision system that detects and classifies hand gestures using MediaPipe and deep learning (Residual MLP + BiLSTM with Attention).
 
 ## Gesture Vocabulary
 
-### Static (pose)
+### Static (pose) — 37 classes
 | ID | Gesture | Label |
 |----|---------|-------|
-| 0 | ✋ Open hand | `open_hand` |
-| 1 | ✊ Fist | `fist` |
-| 2 | 👍 Thumbs up | `thumbs_up` |
-| 3 | 👎 Thumbs down | `thumbs_down` |
-| 4 | ✌️ Peace | `peace` |
-| 5 | 👌 OK | `ok` |
-| 6 | ☝️ Pointing up | `pointing_up` |
-| 7 | 👇 Pointing down | `pointing_down` |
+| 0–9 | Digits | `0` – `9` |
+| a–z | ASL Alphabet | `a` – `z` |
+| open_hand | Open hand | `open_hand` |
+| fist | Fist | `fist` |
+| thumbs_up | Thumbs up | `thumbs_up` |
+| thumbs_down | Thumbs down | `thumbs_down` |
+| peace | Peace / Victory | `peace` |
+| ok | OK | `ok` |
+| pointing_up | Pointing up | `pointing_up` |
+| pointing_down | Pointing down | `pointing_down` |
 
-### Dynamic (motion)
-| ID | Gesture | Label |
-|----|---------|-------|
-| 0 | ← Swipe left | `swipe_left` |
-| 1 | → Swipe right | `swipe_right` |
-| 2 | 🔍+ Zoom in | `zoom_in` |
-| 3 | 🔍− Zoom out | `zoom_out` |
+### Dynamic (motion) — 4 classes
+| ID | Gesture | Label | Action |
+|----|---------|-------|--------|
+| 0 | Swipe left | `swipe_left` | Backspace (delete last character) |
+| 1 | Swipe right | `swipe_right` | Add space |
+| 2 | Zoom in | `zoom_in` | Increase sentence text size |
+| 3 | Zoom out | `zoom_out` | Decrease sentence text size |
+
+> **Swipe down** (hand moved downward) triggers **Clear All** via the physics engine.
+
+---
 
 ## Setup
 
@@ -32,72 +38,138 @@ python -m venv venv
 pip install -r requirements.txt
 ```
 
+Or use the automated setup script:
+
+```powershell
+.\setup_env.ps1
+```
+
+---
+
 ## Usage — Step by Step
 
 ```powershell
-# 1. Collect static gesture data (300 samples per gesture)
+# 1. Collect static gesture data
 python collect_static_gestures.py
 
-# 2. Collect dynamic gesture data (100 sequences per gesture)
+# 2. Collect dynamic gesture data
 python collect_dynamic_gestures.py
 
-# 3. Train static MLP model
+# 3. Split dynamic data into train/test (prevents data leakage)
+python prepare_dynamic_data.py
+
+# 4. Train static Residual MLP
 python models/train_static.py
 
-# 4. Train dynamic LSTM model
+# 5. Train dynamic BiLSTM + Attention
 python models/train_dynamic.py
 
-# 5. Evaluate both models
+# 6. Evaluate both models
 python models/evaluate.py
 
-# 6. Run live demo!
+# 7. Run model comparison against baselines
+python models/compare_static.py
+python models/compare_dynamic.py
+
+# 8. Run live demo
 python inference/realtime_recognizer.py
 ```
+
+---
 
 ## Architecture
 
 ```
-Webcam → MediaPipe (21 landmarks × 3D)
-              │
-    ┌─────────┴──────────┐
-    ▼                    ▼
-  MLP (63,)         LSTM (30, 63)
-  Static gestures   Dynamic gestures
-    │                    │
-    └─────────┬──────────┘
-              ▼
-         Gesture label + confidence
-              │
-         Overlay UI (OpenCV)
+Webcam → MediaPipe Hand Landmarker (21 landmarks × 3D)
+                      │
+          ┌───────────┴────────────┐
+          ▼                        ▼
+  Residual MLP                BiLSTM + Attention
+  Input: 273-dim               Input: (30, 63)
+  (63 raw + 210 pairwise       raw landmark sequences
+   distances)                  30 frames × 63 coords
+  Static gestures              Dynamic gestures
+          │                        │
+          └───────────┬────────────┘
+                      ▼
+              Gesture label + confidence
+                      │
+              Physics engine overlay
+              (special phrases, conflict
+               resolution, multi-hand)
+                      │
+              Real-time UI (OpenCV + PIL)
 ```
+
+---
 
 ## Project Structure
 
 ```
 project/
 ├── data/
-│   ├── static/                  # Landmark CSVs
-│   └── dynamic/                 # Sequence .npy files
+│   ├── static/                    # Landmark CSVs (37 gesture classes)
+│   ├── dynamic/                   # Training sequences (.npy, raw coords)
+│   └── dynamic_test/              # Held-out test sequences (no leakage)
 ├── preprocessing/
-│   └── feature_extractor.py     # Shared normalization utilities
+│   ├── __init__.py
+│   └── feature_extractor.py       # Feature extraction + label maps
 ├── models/
-│   ├── train_static.py
-│   ├── train_dynamic.py
-│   ├── evaluate.py
-│   ├── keypoint_classifier.keras
-│   └── point_history_classifier.keras
+│   ├── train_static.py            # Residual MLP trainer
+│   ├── train_dynamic.py           # BiLSTM+Attention trainer
+│   ├── evaluate.py                # Full evaluation + confusion matrices
+│   ├── compare_static.py          # Baseline comparison (6 models)
+│   ├── compare_dynamic.py         # Baseline comparison (5 architectures)
+│   ├── keypoint_classifier.keras  # Trained static model
+│   └── point_history_classifier.keras  # Trained dynamic model
 ├── inference/
-│   └── realtime_recognizer.py   ← Main demo
-├── docs/figures/                # Confusion matrices + training curves
+│   └── realtime_recognizer.py     # Live demo (main entry point)
+├── docs/
+│   ├── evaluation_report.txt
+│   ├── comparison_static.txt
+│   ├── comparison_dynamic.txt
+│   └── figures/                   # All plots (PNG)
 ├── collect_static_gestures.py
 ├── collect_dynamic_gestures.py
-└── requirements.txt
+├── prepare_dynamic_data.py
+├── augment_dynamic_gestures.py
+├── requirements.txt
+└── setup_env.ps1
 ```
 
-## Expected Results
+---
 
-| Model | Accuracy | Speed |
-|-------|----------|-------|
-| Static MLP | > 95% | ~1 ms/frame |
-| Dynamic LSTM | > 90% | ~5 ms/frame |
+## Results
+
+### Model Accuracy
+
+| Model | Test Accuracy | CV Accuracy |
+|-------|--------------|-------------|
+| Static Residual MLP (37 classes) | **99.88%** | 99.87% ± 0.09% |
+| Dynamic BiLSTM + Attention (4 classes) | **100.00%** | 100.00% ± 0.00% |
 | Full pipeline | — | > 25 FPS on CPU |
+
+### Comparison Against Baselines
+
+**Static (37 classes, 2,461 test samples):**
+
+| Model | Accuracy |
+|-------|----------|
+| **Residual MLP + pairwise features (ours)** | **99.88%** |
+| Random Forest (200 trees) | 95.57% |
+| SVM (RBF kernel) | 95.25% |
+| K-Nearest Neighbours | 94.80% |
+| Logistic Regression | 94.35% |
+| Shallow MLP (no residuals) | 94.11% |
+
+**Dynamic (4 classes):**
+
+| Model | Accuracy |
+|-------|----------|
+| **BiLSTM + Attention (ours)** | **100.00%** |
+| Flat MLP (no temporal order) | 99.93% |
+| Simple LSTM (unidirectional) | 97.30% |
+| Bidirectional GRU | 96.63% |
+| 1D CNN | 92.13% |
+
+> Comparison figures saved in `docs/figures/`.

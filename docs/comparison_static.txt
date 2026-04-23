@@ -1,0 +1,19 @@
+Static Model Comparison Report — 2026-04-23 22:55:56
+============================================================
+Dataset: 12301 samples | 37 classes
+Test split: 20%  (2461 samples)
+Feature set: 273-dim (raw 63 + 210 pairwise distances) for MLP/LR/KNN/RF
+            63-dim raw for SVM and Shallow MLP
+
+Model                                    Accuracy   Train time
+--------------------------------------------------------------
+  Logistic Regression                     94.35%       4.5s
+  K-Nearest Neighbours (k=5)              94.80%       2.2s
+  Random Forest (200 trees)               95.57%       2.6s
+  SVM (RBF kernel, raw 63-dim)            95.25%       1.1s
+  Shallow MLP (raw 63-dim, no residuals)    94.11%       6.3s
+  Our Residual MLP (273-dim feat.)        99.88%       0.6s  ← BEST
+
+Conclusion: Our Residual MLP with pairwise-distance features achieves
+the highest accuracy, validating both the architecture and feature
+engineering choices over simpler baselines.

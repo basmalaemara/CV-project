@@ -22,8 +22,15 @@ from preprocessing.feature_extractor import extract_advanced_features
 
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelBinarizer
+from sklearn.utils.class_weight import compute_class_weight
 import tensorflow as tf
 from tensorflow.keras import layers, models, callbacks
+
+try:
+    from imblearn.over_sampling import SMOTE
+    SMOTE_AVAILABLE = True
+except ImportError:
+    SMOTE_AVAILABLE = False
 
 os.makedirs("models", exist_ok=True)
 os.makedirs("docs/figures", exist_ok=True)
@@ -36,7 +43,7 @@ for csv_file in sorted(glob.glob("data/static/*.csv")):
     all_dfs.append(df)
 
 if not all_dfs:
-    print("❌  No CSV files found in data/static/")
+    print("No CSV files found in data/static/")
     print("    Run extract_landmarks_from_images.py (Kaggle) or collect_static_gestures.py first.")
     sys.exit(1)
 
@@ -57,39 +64,53 @@ else:
 # They will rely on making distinct poses during data collection to differentiate them.
 y_raw_list = data["label"].astype(str).str.lower().values
 
-# ── Step 3: Data Augmentation (Rotation, Jitter, Noise, Scaling) ──────────
+# ── Class distribution BEFORE augmentation ───────────────────────────────────
+print("\n--- Class Distribution (original data) ---")
+unique_raw, counts_raw = np.unique(y_raw_list, return_counts=True)
+underrepresented = set()
+for lbl, cnt in sorted(zip(unique_raw, counts_raw), key=lambda x: x[1]):
+    flag = " ⚠️  (< 250)" if cnt < 250 else ""
+    print(f"  {lbl:<20} {cnt:>5}{flag}")
+    if cnt < 250:
+        underrepresented.add(lbl)
+print(f"\n  Total: {len(y_raw_list)} samples | {len(unique_raw)} classes")
+
+# ── Step 3: Data Augmentation (Rotation, Jitter, Noise, Scaling, Mirror) ────
 X_aug_list = [X_raw]
 y_final_list = [y_raw_list]
 
-for _ in range(8): # Increased from 6 to 8 for more power!
-    # 1. Random Rotation (+/- 15 degrees) around the Z-axis 
-    # (Since landmarks are centered at wrist, simple 2D rotation on XY works great)
-    angle = np.random.uniform(-15, 15) * (np.pi / 180.0)
+for i in range(12):  # Increased from 8 to 12 for richer diversity
+    # 1. Random Rotation (+/- 20 degrees, widened from 15)
+    angle = np.random.uniform(-20, 20) * (np.pi / 180.0)
     cos_a, sin_a = np.cos(angle), np.sin(angle)
     
-    # Reshape to (N, 21, 3) to apply rotation to each point
     pts = X_raw.reshape(-1, 21, 3)
     rotated_pts = pts.copy()
     rotated_pts[:, :, 0] = pts[:, :, 0] * cos_a - pts[:, :, 1] * sin_a
     rotated_pts[:, :, 1] = pts[:, :, 0] * sin_a + pts[:, :, 1] * cos_a
     X_rot = rotated_pts.reshape(X_raw.shape)
 
-    # 2. 1.8% random gaussian noise
-    noise = np.random.normal(loc=0.0, scale=0.018, size=X_rot.shape)
+    # 2. 2% random gaussian noise (slightly increased)
+    noise = np.random.normal(loc=0.0, scale=0.020, size=X_rot.shape)
     
-    # 3. Random size scaling between 85% and 115%
-    scale = np.random.uniform(0.85, 1.15, size=(X_rot.shape[0], 1))
+    # 3. Random size scaling between 80% and 120%
+    scale = np.random.uniform(0.80, 1.20, size=(X_rot.shape[0], 1))
     
     noisy_scaled_X = (X_rot + noise) * scale
     X_aug_list.append(noisy_scaled_X)
     y_final_list.append(y_raw_list)
+
+# 4. Horizontal Mirror augmentation (flip X axis) — doubles variety
+pts_mirror = X_raw.reshape(-1, 21, 3).copy()
+pts_mirror[:, :, 0] = -pts_mirror[:, :, 0]  # Flip X coordinates
+X_aug_list.append(pts_mirror.reshape(X_raw.shape))
+y_final_list.append(y_raw_list)
 
 X_augmented = np.vstack(X_aug_list).astype(np.float32)
 y_raw = np.concatenate(y_final_list)
 
 # Now calculate angles and distances on the massive augmented dataset!
 X = extract_advanced_features(X_augmented)
-
 
 lb    = LabelBinarizer()
 y_ohe = lb.fit_transform(y_raw)
@@ -101,26 +122,73 @@ X_train, X_val, y_train, y_val = train_test_split(
 )
 print(f"Train: {X_train.shape[0]}  |  Val: {X_val.shape[0]}\n")
 
-# ── Build MLP ─────────────────────────────────────────────────────────────────
-n_classes = y_ohe.shape[1]
+y_train_idx = np.argmax(y_train, axis=1)
 
-model = models.Sequential([
-    layers.Input(shape=(273,)),
-    layers.Dense(512, activation="relu", kernel_regularizer=tf.keras.regularizers.l2(0.0005)),
-    layers.BatchNormalization(),
-    layers.Dropout(0.20),
-    layers.Dense(256, activation="relu", kernel_regularizer=tf.keras.regularizers.l2(0.0005)),
-    layers.BatchNormalization(),
-    layers.Dropout(0.20),
-    layers.Dense(128, activation="relu"),
-    layers.BatchNormalization(),
-    layers.Dropout(0.15),
-    layers.Dense(n_classes, activation="softmax")
-], name="KeypointClassifier")
+# ── SMOTE for underrepresented classes (training only) ────────────────────────
+if SMOTE_AVAILABLE and underrepresented:
+    under_indices    = {i for i, l in enumerate(lb.classes_) if l in underrepresented}
+    unique_tr, counts_tr = np.unique(y_train_idx, return_counts=True)
+    median_count     = int(np.median(counts_tr))
+    sampling_strategy = {
+        i: max(median_count, counts_tr[list(unique_tr).index(i)])
+        for i in under_indices if i in unique_tr
+    }
+    smote            = SMOTE(sampling_strategy=sampling_strategy, random_state=42, k_neighbors=3)
+    X_train, y_train_idx = smote.fit_resample(X_train, y_train_idx)
+    y_train          = lb.transform(lb.classes_[y_train_idx])
+    print(f"  SMOTE applied — training set: {len(y_train_idx)} samples")
+
+# ── Class weights ─────────────────────────────────────────────────────────────
+cw_arr         = compute_class_weight("balanced", classes=np.arange(y_train.shape[1]),
+                                      y=np.argmax(y_train, axis=1))
+class_weight_dict = dict(enumerate(cw_arr))
+
+# ── Build Enhanced MLP with Residual Connection ──────────────────────────────
+n_classes = y_ohe.shape[1]
+n_features = X.shape[1]
+
+inp = layers.Input(shape=(n_features,))
+
+# Block 1
+x = layers.Dense(512, activation="relu", kernel_regularizer=tf.keras.regularizers.l2(0.0003))(inp)
+x = layers.BatchNormalization()(x)
+x = layers.Dropout(0.25)(x)
+
+# Block 2
+x = layers.Dense(256, activation="relu", kernel_regularizer=tf.keras.regularizers.l2(0.0003))(x)
+x = layers.BatchNormalization()(x)
+x = layers.Dropout(0.25)(x)
+
+# Residual block
+res = layers.Dense(128, activation="relu")(x)
+res = layers.BatchNormalization()(res)
+res = layers.Dropout(0.15)(res)
+res = layers.Dense(256, activation="relu")(res)  # Project back to 256
+x = layers.Add()([x, res])  # Skip connection
+
+# Block 3
+x = layers.Dense(128, activation="relu")(x)
+x = layers.BatchNormalization()(x)
+x = layers.Dropout(0.15)(x)
+
+# Block 4
+x = layers.Dense(64, activation="relu")(x)
+x = layers.BatchNormalization()(x)
+
+out = layers.Dense(n_classes, activation="softmax")(x)
+
+model = models.Model(inputs=inp, outputs=out, name="KeypointClassifier_v2")
+
+# Cosine Decay Learning Rate for smoother convergence
+lr_schedule = tf.keras.optimizers.schedules.CosineDecay(
+    initial_learning_rate=1e-3,
+    decay_steps=150 * (X_train.shape[0] // 64),
+    alpha=1e-5
+)
 
 model.compile(
-    optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
-    loss="categorical_crossentropy",
+    optimizer=tf.keras.optimizers.Adam(learning_rate=lr_schedule),
+    loss=tf.keras.losses.CategoricalCrossentropy(label_smoothing=0.05),  # Label smoothing!
     metrics=["accuracy"],
 )
 model.summary()
@@ -129,28 +197,47 @@ model.summary()
 history = model.fit(
     X_train, y_train,
     validation_data=(X_val, y_val),
-    epochs=100,
+    epochs=150,
     batch_size=64,
+    class_weight=class_weight_dict,
     callbacks=[
-        callbacks.EarlyStopping(monitor="val_accuracy", patience=15,
+        callbacks.EarlyStopping(monitor="val_accuracy", patience=20,
                                 restore_best_weights=True, verbose=1),
-        callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5,
-                                    patience=7, verbose=1),
         callbacks.ModelCheckpoint("models/keypoint_classifier_best.keras",
                                   save_best_only=True, monitor="val_accuracy"),
     ],
     verbose=1,
 )
 
+# ── Per-class accuracy on validation set ─────────────────────────────────────
+print("\n--- Per-Class Accuracy on Validation Set (worst → best) ---")
+y_val_idx  = np.argmax(y_val, axis=1)
+y_val_pred = np.argmax(model.predict(X_val, verbose=0), axis=1)
+rows = []
+for i, lbl in enumerate(lb.classes_):
+    mask  = y_val_idx == i
+    total = mask.sum()
+    acc   = (y_val_pred[mask] == i).sum() / total if total > 0 else None
+    rows.append((lbl, acc, total))
+for lbl, acc, total in sorted(rows, key=lambda x: (x[1] is None, x[1] if x[1] is not None else 0)):
+    acc_str = f"{acc*100:.1f}%" if acc is not None else "n/a"
+    flag    = " ⚠️" if acc is not None and acc < 0.85 else ""
+    print(f"  {lbl:<20} {acc_str:>7}  (n={total}){flag}")
+
 # ── Save ──────────────────────────────────────────────────────────────────────
 model.save("models/keypoint_classifier.keras")
 np.save("models/static_class_labels.npy", lb.classes_)
-print(f"\n✅  Model saved  →  models/keypoint_classifier.keras")
-print(f"    Classes ({len(lb.classes_)}): {list(lb.classes_)}")
+
+best_val = max(history.history["val_accuracy"])
+best_train = max(history.history["accuracy"])
+print(f"\n[DONE] Model saved -> models/keypoint_classifier.keras")
+print(f"       Classes ({len(lb.classes_)}): {list(lb.classes_)}")
+print(f"       Best Train Acc: {best_train:.4f}")
+print(f"       Best Val   Acc: {best_val:.4f}")
 
 # ── Plot ──────────────────────────────────────────────────────────────────────
 fig, axes = plt.subplots(1, 2, figsize=(13, 4))
-fig.suptitle(f"MLP Training — {len(lb.classes_)} classes", fontsize=14)
+fig.suptitle(f"MLP Training - {len(lb.classes_)} classes | Best Val Acc: {best_val:.2%}", fontsize=14)
 
 axes[0].plot(history.history["loss"],     label="train", color="#4C9BE8")
 axes[0].plot(history.history["val_loss"], label="val",   color="#E8844C", linestyle="--")
@@ -164,5 +251,5 @@ axes[1].legend(); axes[1].grid(alpha=0.3)
 
 plt.tight_layout()
 plt.savefig("docs/figures/static_training_curves.png", dpi=150)
-print("📊  Training curves → docs/figures/static_training_curves.png")
-plt.show()
+print("[SAVED] Training curves -> docs/figures/static_training_curves.png")
+plt.close()

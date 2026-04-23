@@ -14,14 +14,18 @@ These are recognized when you hold a steady pose for **0.3 seconds**.
 ---
 
 ## 2. Dynamic Motion (Quick Actions)
-These are triggered by **fast movements** using the "Motion-Sense" engine.
+These are detected by the **BiLSTM motion model** and the "Motion-Sense" physics engine.
 
-*   **Swipe Left** ⬅️: Move your hand horizontally to the left. 
+*   **Swipe Left** ⬅️: Move your hand horizontally to the left.
     *   *Action:* Deletes the last character (Backspace).
 *   **Swipe Right** ➡️: Move your hand horizontally to the right.
     *   *Action:* Adds a Space.
-*   **Zoom Out / Clear** 🔙: Move your hand vertically downward quickly.
+*   **Swipe Down** ⬇️: Move your hand vertically downward quickly.
     *   *Action:* Clears the entire sentence.
+*   **Zoom In** 🔍+: Perform a zoom-in motion (hand moving toward camera / expanding).
+    *   *Action:* Increases the sentence text size (up to 2.5×).
+*   **Zoom Out** 🔍−: Perform a zoom-out motion (hand pulling back / contracting).
+    *   *Action:* Decreases the sentence text size (down to 0.7×).
 
 ---
 

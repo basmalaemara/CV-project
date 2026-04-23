@@ -47,17 +47,21 @@ CONFIDENCE_STATIC       = 0.60
 CONFIDENCE_DYNAMIC      = 0.50 
 SEQUENCE_LENGTH         = 30
 HISTORY_MAX             = 8
-HOLD_THRESHOLD          = 1.2  
-TYPE_COOLDOWN           = 0.8  
+HOLD_THRESHOLD          = 1.2
+TYPE_COOLDOWN           = 0.8
+TEXT_SCALE_MIN          = 0.7
+TEXT_SCALE_MAX          = 2.5
+TEXT_SCALE_STEP         = 0.2
 
 # ── Load Models ───────────────────────────────────────────────────────────────
 def load_model_safe(path):
     if not os.path.exists(path): return None
-    return tf.keras.models.load_model(path)
+    return tf.keras.models.load_model(path, safe_mode=False)
 
 static_model  = load_model_safe("models/keypoint_classifier.keras")
 dynamic_model  = load_model_safe("models/point_history_classifier.keras")
 static_labels = (np.load("models/static_class_labels.npy") if os.path.exists("models/static_class_labels.npy") else list(GESTURE_LABELS.values()))
+dynamic_labels_arr = (np.load("models/dynamic_class_labels.npy").astype(int) if os.path.exists("models/dynamic_class_labels.npy") else np.arange(4))
 
 # ── MediaPipe ─────────────────────────────────────────────────────────────────
 options = mp_vision.HandLandmarkerOptions(
@@ -97,7 +101,11 @@ def get_physics_gesture(lms, mode="ALL"):
     base = lms[0]; palm = dist(base, lms[9])
     
     # Robust Extension Check
-    t = dist(lms[4], lms[17]) > palm * 0.8 or dist(lms[4], lms[5]) > palm * 0.5
+    # Thumb: check if thumb tip is OUTSIDE the palm boundary (works for any camera angle)
+    palm_left = min(lms[5].x, lms[17].x)
+    palm_right = max(lms[5].x, lms[17].x)
+    palm_width = max(palm_right - palm_left, 0.01)
+    t = (lms[4].x < palm_left - palm_width * 0.15) or (lms[4].x > palm_right + palm_width * 0.15)
     i = dist(lms[8], base) > dist(lms[6], base) * 1.1
     m = dist(lms[12], base) > dist(lms[10], base) * 1.1
     r = dist(lms[16], base) > dist(lms[14], base) * 1.1
@@ -120,9 +128,18 @@ def get_physics_gesture(lms, mode="ALL"):
 
     # Physics Distinguish One-Finger (1, D, Z)
     if hand_upright and i and not m and not r and not p and not t:
-        if mode == "ALL": return "1"
-        elif mode == "NUMBERS": return "1"
-        elif mode == "LETTERS": return "d"
+        # Z = index finger is DIAGONAL (tilted), D/1 = index finger is STRAIGHT UP
+        # Check angle: compare horizontal offset of fingertip vs MCP joint
+        finger_dx = abs(lms[8].x - lms[5].x)  # horizontal tilt of index finger
+        finger_dy = abs(lms[8].y - lms[5].y)  # vertical extent
+        is_diagonal = finger_dx > finger_dy * 0.4  # finger tilted more than ~22 degrees
+        
+        if is_diagonal:
+            if mode in ["LETTERS", "ALL"]: return "z"
+        else:
+            if mode == "ALL": return "1"
+            elif mode == "NUMBERS": return "1"
+            elif mode == "LETTERS": return "d"
 
     # Priority Number Overrides
     if mode in ["NUMBERS", "ALL"] and hand_upright:
@@ -219,34 +236,42 @@ def draw_onboarding_ui(frame, step, hello_triggered, hello_time, anim_timer, act
         
     return frame
 
-def draw_ui(frame, s_label, s_conf, d_label, d_conf, sentence_built, history, fps, hand_ok, current_mode, elapsed, conflict_pending=None, is_paused=False, pending_system_control=False, active_zone=None, zone_timer=0):
+def draw_ui(frame, s_label, s_conf, d_label, d_conf, sentence_built, history, fps, hand_ok, current_mode, elapsed, conflict_pending=None, is_paused=False, pending_system_control=False, active_zone=None, zone_timer=0, text_scale=1.3, lstm_raw=("-", 0.0)):
     h, w = frame.shape[:2]; hold_p = min(1.0, elapsed / HOLD_THRESHOLD) if s_label not in ["-", "MOVING...", "SELECT OPTION...", "PAUSED"] else 0
     hold_col = ACCENT_GREEN if hold_p >= 1.0 else (255, 120, 100)
     blend_rect(frame, (8, 8), (w - 8, 115), BG_DARK, alpha=0.8); cv2.rectangle(frame, (8, 8), (w - 8, 115), (70, 60, 90), 1)
     sc = ACCENT_GREEN if hand_ok else (100, 100, 255); cv2.circle(frame, (35, 38), 7, sc, -1)
     cv2.putText(frame, f"SYSTEM {'ACTIVE' if hand_ok else 'SEARCHING...'}", (55, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.55, TEXT_WHITE, 1)
-    cv2.putText(frame, f"FPS: {fps:.0f}", (w - 120, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (150, 150, 180), 1)
+    cv2.putText(frame, f"FPS: {fps:.0f}", (w - 200, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (150, 150, 180), 1)
+    cv2.putText(frame, f"ZOOM: {text_scale:.1f}x", (w - 200, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.4, ACCENT_BLUE, 1)
+
     cp = w // 2; cv2.putText(frame, "PRIMARY GESTURE", (cp - 80, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (160, 140, 180), 1)
     disp_lbl = s_label.replace("_", " ").upper() if s_label != "-" else "---"
     (tw, th), _ = cv2.getTextSize(disp_lbl, cv2.FONT_HERSHEY_DUPLEX, 1.2, 3)
     cv2.putText(frame, disp_lbl, (cp - tw // 2, 95), cv2.FONT_HERSHEY_DUPLEX, 1.2, ACCENT_GREEN if s_conf > 0.15 else (140,140,140), 3); draw_bar(frame, cp - 120, 105, 240, hold_p, hold_col)
     cv2.putText(frame, "INTENT INFO", (25, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (140, 130, 150), 1)
     cv2.putText(frame, f"CONF: {s_conf:.0%}", (25, 95), cv2.FONT_HERSHEY_SIMPLEX, 0.55, ACCENT_GREEN, 1)
-    if d_label and d_label != "-":
-        cv2.putText(frame, "COMMAND DETECTED", (w - 230, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.35, ACCENT_BLUE, 1)
-        cv2.putText(frame, d_label.upper(), (w - 230, 100), cv2.FONT_HERSHEY_DUPLEX, 0.6, ACCENT_BLUE, 2)
+
     blend_rect(frame, (8, h - 100), (w - 8, h - 8), (35, 30, 45), alpha=0.9); cv2.rectangle(frame, (8, h - 100), (w - 8, h - 8), (100, 90, 120), 1)
     m_col = ACCENT_PINK if current_mode == "ALL" else ACCENT_BLUE; blend_rect(frame, (25, h - 90), (120, h - 65), m_col, alpha=0.9)
     cv2.putText(frame, current_mode, (38, h - 72), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (20,20,20), 2)
-    img_pil = PImage.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-    draw = PDraw.Draw(img_pil)
-    draw.text((25, h - 85), (sentence_built if sentence_built else "Ready..."), font=EMOJI_FONT, fill=(255, 245, 245))
-    frame = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
+    display_text = sentence_built if sentence_built else "Ready..."
+    has_emoji = any(ord(c) > 0x2600 for c in display_text)
+    if has_emoji:
+        img_pil = PImage.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        draw = PDraw.Draw(img_pil)
+        draw.text((25, h - 60), display_text, font=EMOJI_FONT, fill=(255, 245, 245))
+        frame = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
+    else:
+        cv2.putText(frame, display_text, (25, h - 25), cv2.FONT_HERSHEY_DUPLEX, text_scale, TEXT_WHITE, 2)
     bar_y = h - 130; blend_rect(frame, (8, bar_y), (w - 8, bar_y + 25), (30, 25, 35), alpha=0.8); ctrl_x1, ctrl_x2 = 15, 145
     is_hover = (active_zone == "SYSTEM_TRIGGER"); blend_rect(frame, (ctrl_x1+2, bar_y), (ctrl_x2-2, bar_y+25), ACCENT_PINK if is_hover else (40,35,50), 0.9)
     cv2.putText(frame, "[0] SYSTEM", (ctrl_x1+10, bar_y+18), cv2.FONT_HERSHEY_SIMPLEX, 0.45, ACCENT_PINK, 2)
     for i, name in enumerate(["LETTERS", "NUMBERS", "ALL"]):
         x = 180 + i*180; cv2.putText(frame, f"[{i+1}] {name}", (x, bar_y+18), cv2.FONT_HERSHEY_SIMPLEX, 0.45, ACCENT_GREEN if current_mode==name else (150,140,160), 2 if current_mode==name else 1)
+    # Swipe readiness indicator
+    swipe_col = ACCENT_GREEN if hand_ok else (80, 80, 80)
+    cv2.putText(frame, "SWIPE OK" if hand_ok else "---", (w-140, bar_y+18), cv2.FONT_HERSHEY_SIMPLEX, 0.4, swipe_col, 1)
     if history:
         for i, hl in enumerate(list(history)[:5]):
             y_pos = 140 + i * 45; blend_rect(frame, (w-180, y_pos), (w-15, y_pos+35), (40,35,50), alpha=0.9)
@@ -299,6 +324,14 @@ current_mode, conflict_pending, hand_lost_time = "ALL", None, 0
 wrist_history = deque(maxlen=8); gesture_history = deque(maxlen=HISTORY_MAX)
 pending_destructive_action, zone_timer, active_zone, ui_cooldown, is_paused, pending_system_control = None, 0, None, 0, False, False
 s_label, s_conf, d_label, d_conf = "-", 0.0, "-", 0.0
+landmark_sequence = deque(maxlen=SEQUENCE_LENGTH)
+lstm_cooldown, d_label_expire = 0, 0
+text_scale = 1.3
+zoom_cooldown = 0
+pinch_history = deque(maxlen=16)   # rolling thumb-index spread (16 frames)
+lstm_raw_label, lstm_raw_conf = "-", 0.0
+hand_entry_time = 0  # tracks when the hand first appeared
+prev_hand_ok = False  # tracks previous frame hand state
 
 app_state = "ONBOARDING"
 onboarding_step = 0
@@ -315,11 +348,9 @@ CONFLICT_MAP = {
     "w": ["w", "6"], "6": ["6", "w"],
     "b": ["b", "4"], "4": ["b", "4"],
     "5": ["5", "Hello!"], "0": ["0", "o"], "o": ["0", "o"],
-    "1": ["1", "d", "z"], "d": ["1", "d", "z"], "z": ["1", "d", "z"]
+    "1": ["1", "d"], "d": ["1", "d"]
 }
-LETTERS_CONFLICT_MAP = {
-    "d": ["d", "z"], "z": ["d", "z"]
-}
+LETTERS_CONFLICT_MAP = {}
 PHYSICS_CONFLICTS = {"I LOVE YOU!":("I Love You 🤟 "), "THUMBS UP!":("Right On 👍 "), "CALL ME!":("Call Me 🤙 ")}
 
 while cap.isOpened() and running:
@@ -331,23 +362,58 @@ while cap.isOpened() and running:
     ui_active = (pending_system_control or conflict_pending or pending_destructive_action)
     
     if hand_ok:
+        # Only reset stabilization if hand was gone for more than 0.5s (ignore brief detection jitter)
+        if not prev_hand_ok and (time.time() - hand_lost_time) > 0.5:
+            hand_entry_time = time.time()
+            wrist_history.clear()
+            pinch_history.clear()
         hand_lost_time = time.time(); lms = result.hand_landmarks[0]; draw_hand(frame, lms, h, w)
         wrist_history.append((lms[0].x, lms[0].y)); m_gest = get_multi_hand_gesture(result.hand_landmarks)
+
+        # ── Physics-based pinch zoom ────────────────────────────────────
+        thumb_idx_dist = dist(lms[4], lms[8])
+        pinch_history.append(thumb_idx_dist)
+        if (len(pinch_history) >= 10 and time.time() > zoom_cooldown
+                and not (is_paused or ui_active) and app_state == "MAIN"):
+            hist = list(pinch_history)
+            mn, mx = min(hist), max(hist)
+            spread_range = mx - mn          # total range seen in window
+            if spread_range > 0.07:         # enough motion detected
+                # Direction: did we end near the max (spreading) or min (pinching)?
+                recent_avg  = sum(hist[-4:]) / 4
+                early_avg   = sum(hist[:4])  / 4
+                delta       = recent_avg - early_avg
+                if delta > 0.05:            # spreading = zoom in
+                    text_scale = min(TEXT_SCALE_MAX, text_scale + TEXT_SCALE_STEP)
+                    zoom_cooldown = time.time() + 1.2
+                    pinch_history.clear()
+                elif delta < -0.05:         # pinching = zoom out
+                    text_scale = max(TEXT_SCALE_MIN, text_scale - TEXT_SCALE_STEP)
+                    zoom_cooldown = time.time() + 1.2
+                    pinch_history.clear()
+
+
         moving_fast = False
+        hand_stable = (time.time() - hand_entry_time) > 0.7  # Reduced from 1.5s to 0.7s
         
         if len(wrist_history) == 8:
             vx, vy = sum(abs(wrist_history[i][0]-wrist_history[i-1][0]) for i in range(1,8))/7, sum(abs(wrist_history[i][1]-wrist_history[i-1][1]) for i in range(1,8))/7
             if vx > 0.035 or vy > 0.035: moving_fast = True
             
-            if time.time() > dynamic_cooldown and not (is_paused or ui_active) and app_state == "MAIN":
+            # Only detect swipes when: no multi-hand gesture active, hand is stable, and no UI open
+            if time.time() > dynamic_cooldown and hand_stable and not m_gest and not (is_paused or ui_active) and app_state == "MAIN":
                 dx, dy = wrist_history[-1][0]-wrist_history[0][0], wrist_history[-1][1]-wrist_history[0][1]
-                if dx < -0.15: 
-                    pending_destructive_action, ui_cooldown, dynamic_cooldown, d_label = "BACKSPACE", time.time()+1.2, time.time()+1.0, "BACKSPACE?"
-                elif dx > 0.15: 
-                    sentence_built += " "
-                    dynamic_cooldown, d_label = time.time()+1.0, "SPACE"
-                elif dy > 0.25: 
-                    pending_destructive_action, ui_cooldown, dynamic_cooldown, d_label = "CLEAR ALL", time.time()+1.2, time.time()+1.0, "CLEAR ALL?"
+                # Swipe left = BACKSPACE, Swipe right = SPACE, Swipe down = CLEAR
+                if abs(dx) > 0.18 and abs(dx) > abs(dy) * 2:
+                    if dx < 0:
+                        pending_destructive_action, ui_cooldown, dynamic_cooldown, d_label = "BACKSPACE", time.time()+1.2, time.time()+1.0, "BACKSPACE?"
+                    else:
+                        pending_destructive_action, ui_cooldown, dynamic_cooldown, d_label = "SPACE", time.time()+1.2, time.time()+1.0, "SPACE?"
+                    landmark_sequence.clear(); d_label_expire = 0
+                elif abs(dy) > 0.25 and abs(dy) > abs(dx) * 2:
+                    if dy > 0:
+                        pending_destructive_action, ui_cooldown, dynamic_cooldown, d_label = "CLEAR ALL", time.time()+1.2, time.time()+1.0, "CLEAR ALL?"
+                    landmark_sequence.clear(); d_label_expire = 0
         
         if m_gest: s_label, s_conf = m_gest, 1.0
         elif is_paused or ui_active:
@@ -427,6 +493,8 @@ while cap.isOpened() and running:
                                     else: sentence_built = ""
                                 else:
                                     sentence_built = sentence_built[:-1]
+                            elif pending_destructive_action == "SPACE":
+                                sentence_built += " "
                             elif pending_destructive_action == "CLEAR ALL":
                                 sentence_built = ""
                             elif pending_destructive_action == "EXIT APP":
@@ -441,6 +509,12 @@ while cap.isOpened() and running:
             else: active_zone = None
     else:
         s_label, s_conf = "-", 0.0
+        landmark_sequence.clear()
+        lstm_raw_label, lstm_raw_conf = "-", 0.0
+
+    # Auto-expire zoom gesture label
+    if time.time() > d_label_expire and d_label in ("zoom_in", "zoom_out"):
+        d_label, d_conf = "-", 0.0
 
     # Typing Logic Lock
     if app_state == "MAIN":
@@ -480,7 +554,7 @@ while cap.isOpened() and running:
         frame = draw_onboarding_ui(frame, onboarding_step, hello_triggered, hello_trigger_time, onboarding_timer, active_zone, zone_timer)
         cv2.imshow("Hand Gesture Recognition", frame)
     else:
-        cv2.imshow("Hand Gesture Recognition", draw_ui(frame, s_label, s_conf, d_label, d_conf, sentence_built, gesture_history, fps, hand_ok, current_mode, elapsed, conflict_pending, is_paused, pending_system_control, active_zone, zone_timer))
+        cv2.imshow("Hand Gesture Recognition", draw_ui(frame, s_label, s_conf, d_label, d_conf, sentence_built, gesture_history, fps, hand_ok, current_mode, elapsed, conflict_pending, is_paused, pending_system_control, active_zone, zone_timer, text_scale, (lstm_raw_label, lstm_raw_conf)))
         
     k = cv2.waitKey(1) & 0xFF
     if k == ord("q"): running = False
@@ -489,4 +563,7 @@ while cap.isOpened() and running:
         else: pending_destructive_action, ui_cooldown, dynamic_cooldown, d_label = "EXIT APP", time.time()+1.2, time.time()+0.7, "EXIT?"
     elif k in [ord("1"), ord("2"), ord("3")]: current_mode = ["LETTERS","NUMBERS","ALL"][int(chr(k))-1]
     elif k == ord("0"): pending_system_control = True
+    elif k == ord("="): text_scale = min(TEXT_SCALE_MAX, text_scale + TEXT_SCALE_STEP)   # zoom in
+    elif k == ord("-"): text_scale = max(TEXT_SCALE_MIN, text_scale - TEXT_SCALE_STEP)   # zoom out
+    prev_hand_ok = hand_ok
 cap.release(); cv2.destroyAllWindows(); detector.close()

@@ -30,3 +30,7 @@ Thumbs.db
 
 # Logs
 *.log
+
+# AI Agents
+.claude/
+.gemini/
